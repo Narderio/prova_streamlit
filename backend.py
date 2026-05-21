@@ -151,7 +151,7 @@ Mantieni uno stile discorsivo e adatto allo studio universitario."""
 
     try:
         response = client.models.generate_content(
-            model='gemini-3-flash-preview',
+            model='gemini-3.5-flash',
             contents=f"{prompt}\n\nTRASCRIZIONE:\n{text}"
         )
         return True, response.text
@@ -233,7 +233,7 @@ Output:
 
     try:
         response = client.models.generate_content(
-            model='gemini-3-flash-preview',
+            model='gemini-3.5-flash',
             contents=f"{prompt}\n\nCONTENUTO MARKDOWN:\n{markdown_text}"
         )
         return True, response.text
