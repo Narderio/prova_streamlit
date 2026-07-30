@@ -151,7 +151,7 @@ Mantieni uno stile discorsivo e adatto allo studio universitario."""
 
     try:
         response = client.models.generate_content(
-            model='gemini-3.5-flash',
+            model='gemini-3.6-flash',
             contents=f"{prompt}\n\nTRASCRIZIONE:\n{text}"
         )
         return True, response.text
