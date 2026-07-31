@@ -1,3 +1,5 @@
 streamlit
 google-genai
 python-dotenv
+notion-client
+supabase
