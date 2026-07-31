@@ -1,6 +1,7 @@
 import os
 import re
 import datetime
+import concurrent.futures
 from notion_client import Client
 from dotenv import load_dotenv
 
@@ -48,6 +49,53 @@ def clean_markdown_for_streamlit(text: str) -> str:
     cleaned = re.sub(r'([^\n])\$\$', r'\1\n$$', cleaned)
     cleaned = re.sub(r'\$\$([^\n])', r'$$\n\1', cleaned)
     return cleaned
+
+def split_notion_page_sections(markdown_text: str) -> dict:
+    """
+    Scompone il testo Markdown di una pagina Notion con più lezioni accodate in sezioni distinte.
+    Restituisce un dizionario {titolo_sezione: testo_sezione}.
+    """
+    if not markdown_text:
+        return {"📖 Pagina Completa": ""}
+
+    # Separa il testo SOLO in corrispondenza dei banner di integrazione (non sui divisori --- interni della lezione)
+    parts = re.split(r'(\n(?:---|>\s*📌[^\n]*)\n)', markdown_text)
+    
+    # Filtra solo le parti che contengono realmente "Integrazione Lezione" o 📌
+    has_integrations = any("Integrazione Lezione" in p or "📌" in p for p in parts)
+    if not has_integrations:
+        return {"📖 Lezione Principale": markdown_text}
+
+    sections = {}
+    current_title = "📖 1. Lezione Principale"
+    current_content = []
+    integ_count = 1
+
+    for part in parts:
+        if "Integrazione Lezione" in part or "📌" in part:
+            if current_content:
+                text_block = "".join(current_content).strip()
+                if text_block:
+                    sections[current_title] = text_block
+                current_content = []
+            
+            integ_count += 1
+            match_date = re.search(r'Aggiunta il ([^\n]+)', part)
+            if match_date:
+                current_title = f"📌 {integ_count}. Integrazione ({match_date.group(1).strip()})"
+            else:
+                current_title = f"📌 {integ_count}. Integrazione Lezione"
+            current_content.append(part)
+        else:
+            current_content.append(part)
+
+    if current_content:
+        text_block = "".join(current_content).strip()
+        if text_block:
+            sections[current_title] = text_block
+
+    sections["🌐 Tutti gli Appunti della Pagina (Completo)"] = markdown_text
+    return sections
 
 def parse_inline_markdown(text: str):
     """
@@ -413,17 +461,31 @@ def find_original_version_page(results, title_prop):
 
 def get_notion_page_markdown(page_id, api_key=None) -> str:
     """
-    Legge i blocchi di una pagina Notion e ricostruisce fedelmente il testo in formato Markdown
-    ripristinando formule LaTeX ($...$), grassetto, corsivo e codice.
+    Legge TUTTI i blocchi di una pagina Notion (usando la paginazione completa)
+    e ricostruisce fedelmente l'intero testo in formato Markdown.
     """
     client = get_notion_client(api_key)
     if not client or not page_id:
         return ""
     clean_id = format_notion_id(page_id)
     try:
-        response = client.blocks.children.list(block_id=clean_id)
+        results = []
+        has_more = True
+        start_cursor = None
+
+        # Paginazione completa per recuperare TUTTI i blocchi della pagina (anche oltre 100 blocchi)
+        while has_more:
+            kwargs = {"block_id": clean_id}
+            if start_cursor:
+                kwargs["start_cursor"] = start_cursor
+            
+            response = client.blocks.children.list(**kwargs)
+            results.extend(response.get("results", []))
+            has_more = response.get("has_more", False)
+            start_cursor = response.get("next_cursor")
+
         lines = []
-        for block in response.get("results", []):
+        for block in results:
             b_type = block.get("type")
             if b_type in ["paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list_item", "numbered_list_item", "quote", "code", "callout", "equation"]:
                 
@@ -449,7 +511,8 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
                 elif b_type == "quote":
                     lines.append(f"> {text_content}")
                 elif b_type == "callout":
-                    lines.append(f"> 📌 {text_content}")
+                    icon_emoji = block.get("callout", {}).get("icon", {}).get("emoji", "📌")
+                    lines.append(f"> {icon_emoji} {text_content}")
                 elif b_type == "code":
                     lang = block.get("code", {}).get("language", "")
                     lines.append(f"```{lang}\n{text_content}\n```")
@@ -463,6 +526,141 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
     except Exception as e:
         print(f"Errore lettura blocchi da Notion: {e}")
         return ""
+
+def update_notion_page_in_place(lesson_page_id, markdown_text, api_key=None):
+    """
+    Aggiorna i blocchi della pagina Notion in PARALLELO (ad alta velocita' con 20 worker simultanei),
+    aggiornando i blocchi esistenti in-place senza far attendere il frontend.
+    """
+    client = get_notion_client(api_key)
+    if not client or not lesson_page_id:
+        return False, "Client Notion o Page ID mancante."
+
+    clean_page_id = format_notion_id(lesson_page_id)
+    new_blocks = markdown_to_notion_blocks(markdown_text)
+
+    try:
+        # 1. Recupera i blocchi attuali della pagina Notion (con paginazione)
+        existing_blocks = []
+        has_more = True
+        start_cursor = None
+        while has_more:
+            kwargs = {"block_id": clean_page_id}
+            if start_cursor:
+                kwargs["start_cursor"] = start_cursor
+            res = client.blocks.children.list(**kwargs)
+            existing_blocks.extend(res.get("results", []))
+            has_more = res.get("has_more", False)
+            start_cursor = res.get("next_cursor")
+
+        min_len = min(len(existing_blocks), len(new_blocks))
+
+        def update_single_block(index):
+            old_b = existing_blocks[index]
+            old_b_id = old_b.get("id")
+            old_type = old_b.get("type")
+            new_b = new_blocks[index]
+            new_type = new_b.get("type")
+            b_payload = new_b.get(new_type)
+            
+            if old_type == new_type:
+                try:
+                    client.blocks.update(
+                        block_id=old_b_id,
+                        **{new_type: b_payload}
+                    )
+                    return
+                except Exception:
+                    pass
+
+            try:
+                client.blocks.delete(block_id=old_b_id)
+            except Exception:
+                pass
+            client.blocks.children.append(block_id=clean_page_id, children=[new_b])
+
+        # Esecuzione PARALLELA a 20 worker per massima velocita' istantanea
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(update_single_block, i) for i in range(min_len)]
+            concurrent.futures.wait(futures)
+
+        # Se ci sono piu' blocchi nuovi che vecchi, appendi i rimanenti alla fine in blocchi da 80 in parallelo
+        if len(new_blocks) > len(existing_blocks):
+            remaining_new = new_blocks[len(existing_blocks):]
+            chunk_size = 80
+            chunks = [remaining_new[i:i + chunk_size] for i in range(0, len(remaining_new), chunk_size)]
+            
+            def append_chunk(chunk):
+                client.blocks.children.append(
+                    block_id=clean_page_id,
+                    children=chunk
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = [executor.submit(append_chunk, c) for c in chunks]
+                concurrent.futures.wait(futures)
+
+        # Se ci sono piu' blocchi vecchi che nuovi, rimuovi quelli in eccesso in parallelo
+        elif len(existing_blocks) > len(new_blocks):
+            def delete_extra_block(index):
+                old_b_id = existing_blocks[index].get("id")
+                try:
+                    client.blocks.delete(block_id=old_b_id)
+                except Exception:
+                    pass
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                futures = [executor.submit(delete_extra_block, i) for i in range(len(new_blocks), len(existing_blocks))]
+                concurrent.futures.wait(futures)
+
+        return True, None
+    except Exception as e:
+        print(f"Avviso aggiornamento in-place Notion: {e}")
+        return overwrite_notion_page(lesson_page_id, markdown_text, api_key=api_key)
+
+def overwrite_notion_page(lesson_page_id, markdown_text, api_key=None):
+    """
+    Fallback: Svuota i blocchi esistenti della pagina Notion e vi scrive i nuovi blocchi.
+    """
+    client = get_notion_client(api_key)
+    if not client or not lesson_page_id:
+        return False, "Client Notion o Page ID mancante."
+
+    clean_page_id = format_notion_id(lesson_page_id)
+
+    # 1. Svuota tutti i blocchi esistenti della pagina (con paginazione)
+    try:
+        children_list = []
+        has_more = True
+        start_cursor = None
+        while has_more:
+            kwargs = {"block_id": clean_page_id}
+            if start_cursor:
+                kwargs["start_cursor"] = start_cursor
+            res = client.blocks.children.list(**kwargs)
+            children_list.extend(res.get("results", []))
+            has_more = res.get("has_more", False)
+            start_cursor = res.get("next_cursor")
+
+        def delete_single_block(block):
+            b_id = block.get("id")
+            try:
+                client.blocks.delete(block_id=b_id)
+            except Exception as e_del:
+                print(f"Avviso cancellazione blocco Notion {b_id}: {e_del}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(delete_single_block, b) for b in children_list]
+            concurrent.futures.wait(futures)
+
+    except Exception as e:
+        print(f"Avviso scansione blocchi da cancellare su Notion: {e}")
+
+    # 2. Converte il nuovo Markdown modificato in blocchi Notion
+    blocks = markdown_to_notion_blocks(markdown_text)
+
+    # 3. Inserisce i nuovi blocchi nella pagina svuotata
+    return append_notes_to_page(lesson_page_id, blocks, is_append=False, api_key=api_key)
 
 def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False, api_key=None):
     """
@@ -552,7 +750,7 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False
 def markdown_to_notion_blocks(markdown_text: str):
     """
     Converte una stringa di testo Markdown in una lista di blocchi Notion API,
-    interpretando ed applicando la formattazione inline, formule LaTeX a blocco e titoli a tutti i livelli.
+    interpretando ed applicando la formattazione inline, formule LaTeX a blocco, titoli e blocchi Callout (📌).
     """
     blocks = []
     lines = markdown_text.splitlines()
@@ -683,6 +881,27 @@ def markdown_to_notion_blocks(markdown_text: str):
                 "type": "heading_3",
                 "heading_3": {"rich_text": parse_inline_markdown(cleaned_title)}
             })
+        # 5. Callout con emoji (📌, 📝, 💡, ⚠️, 🎓, ℹ️)
+        elif stripped.startswith("> ") and any(e in stripped for e in ["📌", "📝", "💡", "⚠️", "🎓", "ℹ️"]):
+            match_callout = re.match(r'^>\s*([📌📝💡⚠️🎓ℹ️])\s*(.*)$', stripped)
+            if match_callout:
+                emoji_char = match_callout.group(1)
+                callout_text = match_callout.group(2)
+                blocks.append({
+                    "object": "block",
+                    "type": "callout",
+                    "callout": {
+                        "rich_text": parse_inline_markdown(callout_text),
+                        "icon": {"type": "emoji", "emoji": emoji_char}
+                    }
+                })
+                continue
+            else:
+                blocks.append({
+                    "object": "block",
+                    "type": "quote",
+                    "quote": {"rich_text": parse_inline_markdown(stripped[2:])}
+                })
         # Liste puntate - o *
         elif stripped.startswith("- ") or stripped.startswith("* "):
             blocks.append({
@@ -717,7 +936,7 @@ def markdown_to_notion_blocks(markdown_text: str):
 
 def append_notes_to_page(lesson_page_id, blocks, is_append=False, api_key=None):
     """
-    Invia i blocchi Notion alla pagina specificata. Se is_append è True,
+    Invia i blocchi Notion alla pagina specificata in PARALLELO. Se is_append è True,
     inserisce un divisore ed un'intestazione di integrazione.
     """
     client = get_notion_client(api_key)
@@ -737,20 +956,25 @@ def append_notes_to_page(lesson_page_id, blocks, is_append=False, api_key=None):
                     "type": "callout",
                     "callout": {
                         "rich_text": [{"type": "text", "text": {"content": f"📌 Integrazione Lezione - Aggiunta il {today_time}"}}],
-                        "icon": {"type": "emoji", "emoji": "📝"}
+                        "icon": {"type": "emoji", "emoji": "📌"}
                     }
                 }
             ])
         final_blocks.extend(blocks)
 
-        # Notion accetta massimo 100 blocchi per chiamata API
         chunk_size = 80
-        for i in range(0, len(final_blocks), chunk_size):
-            chunk = final_blocks[i:i + chunk_size]
+        chunks = [final_blocks[i:i + chunk_size] for i in range(0, len(final_blocks), chunk_size)]
+
+        def append_chunk(chunk):
             client.blocks.children.append(
                 block_id=clean_page_id,
                 children=chunk
             )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(append_chunk, c) for c in chunks]
+            concurrent.futures.wait(futures)
+
         return True, None
     except Exception as e:
         return False, f"Errore durante l'inserimento degli appunti su Notion: {e}"

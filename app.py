@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import os
 import time
 import datetime
+import threading
 import importlib
 from dotenv import load_dotenv
 
@@ -48,6 +49,11 @@ def st_copy_to_clipboard(text, label="📋 Copia"):
     """
     components.html(copy_js, height=50)
 
+# --- CALLBACK PER SINCRONIZZARE L'EDITOR CON LO STATO ---
+def update_appunti_from_editor():
+    if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
+        st.session_state.appunti_generati = st.session_state.markdown_editor_area
+
 # --- INIZIO INTERFACCIA STREAMLIT ---
 st.set_page_config(page_title="Vimeo to Notion University Notes", page_icon="🎓", layout="wide")
 
@@ -79,7 +85,7 @@ selected_model = st.sidebar.selectbox("Scegli il modello:", AVAILABLE_MODELS, in
 
 # --- TITOLO PRINCIPALE ---
 st.title("🎓 Da Vimeo ad Appunti & Notion")
-st.markdown("Estrai la trascrizione dai video Vimeo, genera appunti universitari con Gemini e salvali direttamente nel tuo workspace **Notion**.")
+st.markdown("Estrai la trascrizione dai video Vimeo, genera ed edita appunti universitari con Gemini e salvali direttamente su **Notion**.")
 
 # --- INIZIALIZZAZIONE SESSION STATE ---
 if 'testo_estratto' not in st.session_state:
@@ -92,6 +98,8 @@ if 'notion_status' not in st.session_state:
     st.session_state.notion_status = None
 if 'notion_page_url' not in st.session_state:
     st.session_state.notion_page_url = None
+if 'current_notion_page_id' not in st.session_state:
+    st.session_state.current_notion_page_id = None
 
 # --- FORM DI INSERIMENTO ---
 col_left, col_right = st.columns([2, 1])
@@ -182,8 +190,8 @@ if video_id_preview:
     if is_proc:
         already_processed = True
         saved_page_id = record.get("notion_page_id")
-        
         if saved_page_id:
+            st.session_state.current_notion_page_id = saved_page_id
             clean_pid = notion_helper.format_notion_id(saved_page_id).replace("-", "")
             existing_notion_url = f"https://www.notion.so/{clean_pid}"
         elif selected_course_page_id:
@@ -202,7 +210,7 @@ if video_id_preview:
 
         force_reprocess = st.checkbox("🔄 Elabora ed esporta comunque (creando una nuova versione)", value=False)
 
-        # Autocaricamento automatico degli appunti esistenti da Notion
+        # Autocaricamento automatico dell'INTERA pagina di appunti da Notion
         if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
             fetched_notes = notion_helper.get_notion_page_markdown(saved_page_id, api_key=notion_token)
             if fetched_notes:
@@ -292,6 +300,7 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
                                 st.warning(f"⚠️ Avviso Notion: {msg_notion}")
                                 st.session_state.notion_status = f"Errore Notion: {msg_notion}"
                             else:
+                                st.session_state.current_notion_page_id = notion_page_id
                                 st.session_state.notion_status = f"✅ {msg_notion}"
                                 st.write(f"✅ {msg_notion}")
 
@@ -336,8 +345,56 @@ if st.session_state.testo_estratto or st.session_state.appunti_generati:
         for i, tab_name in enumerate(tabs_to_show):
             with tabs[i]:
                 if "Appunti" in tab_name:
-                    st.markdown(st.session_state.appunti_generati)
+                    sub_col1, sub_col2 = st.columns([3, 1])
+                    with sub_col1:
+                        view_mode = st.radio("Modalità visualizzazione:", ["👁️ Anteprima Formattata", "✏️ Modifica Markdown"], horizontal=True)
+                    with sub_col2:
+                        st.write("")
+                        if st.button("📤 Salva / Sovrascrivi su Notion", type="primary", key="btn_save_edited_notion"):
+                            target_pid = st.session_state.get("current_notion_page_id")
+                            if not target_pid:
+                                db_id, _ = notion_helper.get_or_create_course_database(selected_course_page_id, selected_course, notion_token)
+                                target_pid, _, _ = notion_helper.get_or_create_lesson_entry(db_id, formatted_date_str, is_same_video=already_processed, api_key=notion_token)
+                                st.session_state.current_notion_page_id = target_pid
+
+                            if target_pid:
+                                # Avvio ASINCRONO non bloccante in background thread
+                                bg_thread = threading.Thread(
+                                    target=notion_helper.update_notion_page_in_place,
+                                    args=(target_pid, st.session_state.appunti_generati, notion_token),
+                                    daemon=True
+                                )
+                                bg_thread.start()
+
+                                clean_pid = notion_helper.format_notion_id(target_pid).replace("-", "")
+                                st.session_state.notion_page_url = f"https://www.notion.so/{clean_pid}"
+                                st.session_state.notion_status = "⚡ Salvataggio inviato in background! La pagina Notion si aggiornera' in pochissimi istanti."
+                                st.toast("⚡ Aggiornamento Notion inviato in background!", icon="🚀")
+                                st.success("⚡ Salvataggio inviato su Notion in modalità asincrona! Puoi continuare a lavorare subito.")
+                            else:
+                                st.error("Impossibile individuare la pagina Notion da aggiornare.")
+
                     st.divider()
+
+                    if view_mode == "✏️ Modifica Markdown":
+                        edited_text = st.text_area(
+                            "Modifica liberamente il testo Markdown dell'intera pagina:",
+                            value=st.session_state.appunti_generati,
+                            height=550,
+                            key="markdown_editor_area",
+                            on_change=update_appunti_from_editor
+                        )
+                        # Sincronizza immediatamente lo stato se l'utente digita
+                        st.session_state.appunti_generati = edited_text
+                    else:
+                        # Assicura la sincronizzazione anche se la chiave dell'editor esiste in sessione
+                        if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
+                            st.session_state.appunti_generati = st.session_state.markdown_editor_area
+                        cleaned_render = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati)
+                        st.markdown(cleaned_render)
+
+                    st.divider()
+
                     c1, c2 = st.columns([1, 4])
                     with c1:
                         st.download_button("💾 Scarica .md", st.session_state.appunti_generati, f"appunti_{formatted_date_str.replace('/', '_')}.md")
