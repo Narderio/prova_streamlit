@@ -3,11 +3,19 @@ import streamlit.components.v1 as components
 import os
 import time
 import datetime
+import importlib
 from dotenv import load_dotenv
 
-from backend import download_and_process, generate_notes, generate_latex, export_to_notion, extract_vimeo_ids, DEFAULT_PROMPT
+import backend
 import notion_helper
 import supabase_client
+
+# Ricarica dinamica moduli per garantire che le modifiche al codice backend siano sempre applicate
+importlib.reload(backend)
+importlib.reload(notion_helper)
+importlib.reload(supabase_client)
+
+from backend import download_and_process, generate_notes, generate_latex, export_to_notion, extract_vimeo_ids, DEFAULT_PROMPT
 
 load_dotenv()
 
@@ -82,6 +90,8 @@ if 'latex_generato' not in st.session_state:
     st.session_state.latex_generato = None
 if 'notion_status' not in st.session_state:
     st.session_state.notion_status = None
+if 'notion_page_url' not in st.session_state:
+    st.session_state.notion_page_url = None
 
 # --- FORM DI INSERIMENTO ---
 col_left, col_right = st.columns([2, 1])
@@ -162,7 +172,7 @@ if do_markdown_notion or do_latex:
                     else:
                         st.warning("Inserisci sia un titolo che un testo per il prompt.")
 
-# --- CHECK DUPLICATI SUPABASE ---
+# --- CHECK DUPLICATI SUPABASE & AUTOCARICAMENTO ---
 video_id_preview, _ = extract_vimeo_ids(url) if url else (None, None)
 already_processed = False
 force_reprocess = False
@@ -171,8 +181,34 @@ if video_id_preview:
     is_proc, record = supabase_client.is_video_processed(video_id_preview)
     if is_proc:
         already_processed = True
-        st.warning(f"⚠️ **Attenzione:** Questa lezione (Video ID: `{video_id_preview}`) risulta già elaborata il **{record.get('created_at', '')[:10]}** per il corso **{record.get('course')}**.")
-        force_reprocess = st.checkbox("🔄 Elabora ed esporta comunque (ignorando la cache)", value=False)
+        saved_page_id = record.get("notion_page_id")
+        
+        if saved_page_id:
+            clean_pid = notion_helper.format_notion_id(saved_page_id).replace("-", "")
+            existing_notion_url = f"https://www.notion.so/{clean_pid}"
+        elif selected_course_page_id:
+            clean_pid = notion_helper.format_notion_id(selected_course_page_id).replace("-", "")
+            existing_notion_url = f"https://www.notion.so/{clean_pid}"
+        else:
+            existing_notion_url = None
+
+        col_warn_msg, col_warn_btn = st.columns([3, 1])
+        with col_warn_msg:
+            st.warning(f"⚠️ **Attenzione:** Questa lezione (Video ID: `{video_id_preview}`) risulta già elaborata il **{record.get('created_at', '')[:10]}** per il corso **{record.get('course')}**.")
+        with col_warn_btn:
+            if existing_notion_url:
+                st.write("")
+                st.link_button("📖 Apri su Notion", existing_notion_url, use_container_width=True)
+
+        force_reprocess = st.checkbox("🔄 Elabora ed esporta comunque (creando una nuova versione)", value=False)
+
+        # Autocaricamento automatico degli appunti esistenti da Notion
+        if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
+            fetched_notes = notion_helper.get_notion_page_markdown(saved_page_id, api_key=notion_token)
+            if fetched_notes:
+                st.session_state.appunti_generati = fetched_notes
+                st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
+                st.session_state.notion_page_url = existing_notion_url
 
 st.divider()
 
@@ -194,6 +230,7 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
         st.session_state.appunti_generati = None
         st.session_state.latex_generato = None
         st.session_state.notion_status = None
+        st.session_state.notion_page_url = None
 
         with st.status("⚙️ Elaborazione in corso...", expanded=True) as status:
             # 1. Download trascrizione Vimeo
@@ -207,7 +244,7 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
                 st.session_state.testo_estratto = result_vimeo
                 st.write("✅ Trascrizione scaricata con successo.")
 
-                # Salva subito su Supabase per bloccare rielaborazioni future
+                # Salva subito su Supabase per bloccare rielaborazioni future dello stesso link
                 if v_id:
                     supabase_client.save_processed_lesson(
                         video_id=v_id,
@@ -247,6 +284,7 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
                                 course_page_id=selected_course_page_id,
                                 lesson_date_str=formatted_date_str,
                                 markdown_text=result_notes,
+                                is_same_video=already_processed,
                                 api_key=notion_token
                             )
 
@@ -256,6 +294,10 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
                             else:
                                 st.session_state.notion_status = f"✅ {msg_notion}"
                                 st.write(f"✅ {msg_notion}")
+
+                                if notion_page_id:
+                                    clean_pid = notion_helper.format_notion_id(notion_page_id).replace("-", "")
+                                    st.session_state.notion_page_url = f"https://www.notion.so/{clean_pid}"
 
                                 # Aggiorna record Supabase con l'ID della pagina Notion creata
                                 if v_id:
@@ -273,7 +315,12 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
 if st.session_state.testo_estratto or st.session_state.appunti_generati:
     st.write("")
     if st.session_state.notion_status:
-        st.success(st.session_state.notion_status)
+        c_status, c_btn = st.columns([3, 1])
+        with c_status:
+            st.success(st.session_state.notion_status)
+        with c_btn:
+            if st.session_state.notion_page_url:
+                st.link_button("📖 Apri Lezione su Notion", st.session_state.notion_page_url, use_container_width=True)
 
     tabs_to_show = []
     if st.session_state.appunti_generati:

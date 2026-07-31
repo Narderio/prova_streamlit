@@ -41,7 +41,7 @@ def is_video_processed(video_id: str):
     if not client:
         return False, None
     try:
-        res = client.table("processed_lessons").select("*").eq("video_id", video_id).execute()
+        res = client.table("processed_lessons").select("*").eq("video_id", str(video_id)).execute()
         if res.data and len(res.data) > 0:
             return True, res.data[0]
         return False, None
@@ -52,18 +52,32 @@ def is_video_processed(video_id: str):
 def save_processed_lesson(video_id: str, url: str, course: str, lesson_date: str, notion_page_id: str = None):
     """
     Salva la lezione elaborata nella tabella processed_lessons di Supabase.
+    Preserva SEMPRE il notion_page_id della versione originale (la prima creata) per evitare che rielaborazioni future lo sovrascrivano.
     """
     client = get_supabase_client()
     if not client:
         return False, "Credenziali Supabase mancanti."
     try:
         iso_date = format_iso_date(lesson_date)
+        
+        # Controlla se la lezione esiste già per non sovrascrivere l'ID della prima versione originale
+        existing_page_id = None
+        try:
+            existing_res = client.table("processed_lessons").select("notion_page_id").eq("video_id", str(video_id)).execute()
+            if existing_res.data and len(existing_res.data) > 0:
+                existing_page_id = existing_res.data[0].get("notion_page_id")
+        except Exception:
+            pass
+
+        # Se esiste già un notion_page_id per la prima versione, MANTIENILO!
+        final_page_id = existing_page_id if (existing_page_id and str(existing_page_id).strip()) else notion_page_id
+
         data = {
             "video_id": str(video_id),
             "url": str(url),
             "course": str(course),
             "lesson_date": iso_date,
-            "notion_page_id": notion_page_id
+            "notion_page_id": final_page_id
         }
         res = client.table("processed_lessons").upsert(data, on_conflict="video_id").execute()
         return True, res.data

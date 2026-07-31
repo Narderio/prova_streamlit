@@ -219,7 +219,8 @@ def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None)
             model=model_name,
             contents=f"{prompt}\n\nTRASCRIZIONE:\n{text}"
         )
-        return True, response.text
+        cleaned_notes = notion_helper.clean_markdown_for_streamlit(response.text)
+        return True, cleaned_notes
     except Exception as e:
         return False, f"Errore durante la generazione degli appunti con {model_name}: {str(e)}"
 
@@ -242,12 +243,12 @@ def generate_latex(markdown_text, model_name="gemini-3.5-flash-lite"):
     except Exception as e:
         return False, f"Errore durante la conversione in LaTeX: {str(e)}"
 
-def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text, api_key=None):
+def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text, is_same_video=False, api_key=None):
     """
     Workflow di esportazione su Notion:
     1. Cerca/Crea la tabella del corso su Notion.
-    2. Cerca/Crea la riga della lezione per la data.
-    3. Converte il Markdown in blocchi Notion e li inserisce/accoda.
+    2. Cerca/Crea la riga della lezione (accoda se video diverso per stessa data, crea versione se stesso video).
+    3. Converte il Markdown in blocchi Notion e li inserisce.
     Ritorna SEMPRE una tupla a 3 elementi: (success_bool, message_str, page_id_or_none)
     """
     # 1. Trova o crea il database del corso
@@ -256,17 +257,17 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
         return False, f"Errore preparazione tabella Notion: {err}", None
 
     # 2. Trova o crea la riga per la lezione/data
-    lesson_page_id, is_existing, err_l = notion_helper.get_or_create_lesson_entry(db_id, lesson_date_str, api_key)
+    lesson_page_id, is_existing, err_l = notion_helper.get_or_create_lesson_entry(db_id, lesson_date_str, is_same_video=is_same_video, api_key=api_key)
     if err_l or not lesson_page_id:
         return False, f"Errore creazione riga lezione su Notion: {err_l}", None
 
     # 3. Trasforma il Markdown in blocchi Notion
     blocks = notion_helper.markdown_to_notion_blocks(markdown_text)
 
-    # 4. Inserisci/Accoda i blocchi nella pagina Notion
+    # 4. Inserisci i blocchi nella pagina Notion
     success_app, err_app = notion_helper.append_notes_to_page(lesson_page_id, blocks, is_append=is_existing, api_key=api_key)
     if not success_app:
         return False, f"Errore scrittura blocchi su Notion: {err_app}", None
 
-    status_msg = "Appunti accodati alla lezione esistente!" if is_existing else "Nuova lezione creata con appunti su Notion!"
+    status_msg = "Appunti accodati alla lezione del giorno su Notion!" if is_existing else "Lezione creata con successo su Notion!"
     return True, status_msg, lesson_page_id

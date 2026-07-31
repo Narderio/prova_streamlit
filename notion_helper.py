@@ -19,6 +19,36 @@ def format_notion_id(id_str: str) -> str:
         return f"{clean_hex[:8]}-{clean_hex[8:12]}-{clean_hex[12:16]}-{clean_hex[16:20]}-{clean_hex[20:]}"
     return id_str.strip()
 
+def format_iso_date(date_val) -> str:
+    """
+    Convertitore universale di date in formato ISO 'YYYY-MM-DD'.
+    """
+    if not date_val:
+        return datetime.date.today().isoformat()
+    if isinstance(date_val, (datetime.date, datetime.datetime)):
+        return date_val.strftime("%Y-%m-%d")
+    date_str = str(date_val).strip()
+    if "/" in date_str:
+        parts = date_str.split("/")
+        if len(parts) == 3:
+            return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+    return date_str
+
+def clean_markdown_for_streamlit(text: str) -> str:
+    """
+    Pulisce la sintassi LaTeX/Markdown per garantire che Streamlit (KaTeX) e Notion renderizzino
+    le formule senza errori o caratteri rotti.
+    """
+    if not text:
+        return ""
+    # Rimuove \begin{equation} e \end{equation} ridondanti che rompono KaTeX in Streamlit
+    cleaned = re.sub(r'\\begin\{equation\*?\}', '', text)
+    cleaned = re.sub(r'\\end\{equation\*?\}', '', cleaned)
+    # Assicura che i blocchi $$ siano a capo e staccati dal testo successivo
+    cleaned = re.sub(r'([^\n])\$\$', r'\1\n$$', cleaned)
+    cleaned = re.sub(r'\$\$([^\n])', r'$$\n\1', cleaned)
+    return cleaned
+
 def parse_inline_markdown(text: str):
     """
     Scompone una stringa di testo contenente sintassi Markdown inline 
@@ -47,6 +77,8 @@ def parse_inline_markdown(text: str):
         # 1. Math / Equazioni Notion
         if (token.startswith("$$") and token.endswith("$$")) or (token.startswith("$") and token.endswith("$")):
             expr = token.strip("$").strip()
+            expr = re.sub(r'\\begin\{equation\*?\}', '', expr)
+            expr = re.sub(r'\\end\{equation\*?\}', '', expr).strip()
             if expr:
                 rich_text_list.append({
                     "type": "equation",
@@ -103,6 +135,58 @@ def parse_inline_markdown(text: str):
 
     return rich_text_list if rich_text_list else [{"type": "text", "text": {"content": text[:2000]}}]
 
+def rich_text_to_markdown(rich_text_list) -> str:
+    """
+    Converte un array 'rich_text' di Notion in una stringa Markdown formattata 
+    (ripristinando Grassetto **, Corsivo *, Codice `, ed Equazioni LaTeX $...$).
+    """
+    if not rich_text_list:
+        return ""
+    
+    result = []
+    for item in rich_text_list:
+        i_type = item.get("type")
+        
+        # 1. Equazione LaTeX nativa di Notion
+        if i_type == "equation":
+            expr = item.get("equation", {}).get("expression", "")
+            if expr:
+                expr_clean = re.sub(r'\\begin\{equation\*?\}', '', expr)
+                expr_clean = re.sub(r'\\end\{equation\*?\}', '', expr_clean).strip()
+                if "\n" in expr_clean or r"\begin{" in expr_clean or r"\\" in expr_clean or len(expr_clean) > 50:
+                    result.append(f"\n\n$$\n{expr_clean}\n$$\n\n")
+                else:
+                    result.append(f"${expr_clean}$")
+            continue
+            
+        # 2. Testo normale con annotazioni
+        content = item.get("text", {}).get("content") or item.get("plain_text", "")
+        if not content:
+            continue
+            
+        ann = item.get("annotations", {})
+        bold = ann.get("bold", False)
+        italic = ann.get("italic", False)
+        code = ann.get("code", False)
+        strikethrough = ann.get("strikethrough", False)
+        
+        formatted = content
+        if code:
+            formatted = f"`{formatted}`"
+        else:
+            if bold and italic:
+                formatted = f"***{formatted}***"
+            elif bold:
+                formatted = f"**{formatted}**"
+            elif italic:
+                formatted = f"*{formatted}*"
+            if strikethrough:
+                formatted = f"~~{formatted}~~"
+                
+        result.append(formatted)
+        
+    return "".join(result)
+
 def get_notion_client(api_key=None) -> Client | None:
     token = api_key or os.getenv("NOTION_API_KEY")
     if not token:
@@ -128,33 +212,37 @@ def get_target_data_source_id(client: Client, database_id: str):
         pass
     return clean_id, False
 
-def query_notion_database(client: Client, database_id: str, filter_dict: dict):
+def query_notion_database(client: Client, database_id: str, filter_dict: dict = None):
     """
     Interroga la tabella Notion usando il Data Source ID o il Database ID.
     """
     target_id, is_data_source = get_target_data_source_id(client, database_id)
+    kwargs = {}
+    if filter_dict:
+        kwargs["filter"] = filter_dict
     
     # 1. Prova con data_sources.query (Notion SDK 3.x)
     if is_data_source and hasattr(client, "data_sources"):
         try:
-            return client.data_sources.query(data_source_id=target_id, filter=filter_dict)
+            return client.data_sources.query(data_source_id=target_id, **kwargs)
         except Exception as e:
             print(f"Notion data_sources.query notice: {e}")
 
     # 2. Prova con databases.query (Notion SDK 2.x legacy)
     if hasattr(client, "databases") and hasattr(client.databases, "query"):
         try:
-            return client.databases.query(database_id=target_id, filter=filter_dict)
+            return client.databases.query(database_id=target_id, **kwargs)
         except Exception as e:
             print(f"Notion databases.query notice: {e}")
 
     # 3. Prova tramite client.request con data_sources o databases
     try:
         path_str = f"data_sources/{target_id}/query" if is_data_source else f"databases/{target_id}/query"
+        body = {"filter": filter_dict} if filter_dict else {}
         return client.request(
             path=path_str,
             method="POST",
-            body={"filter": filter_dict}
+            body=body
         )
     except Exception as e:
         print(f"Notion request query notice: {e}")
@@ -164,11 +252,15 @@ def query_notion_database(client: Client, database_id: str, filter_dict: dict):
 def get_database_schema_props(client: Client, database_id: str):
     """
     Ispeziona ed allinea lo schema del Database Notion (Notion API v3 data_sources).
-    Trova o imposta il nome della colonna 'title' su 'Lezione' e della colonna 'checkbox' su 'Appunti'.
+    Garantisce la presenza di:
+    - Colonna Title: 'Lezione'
+    - Colonna Checkbox: 'Appunti'
+    - Colonna Date: 'Data'
     """
     target_id, is_data_source = get_target_data_source_id(client, database_id)
     title_prop_name = None
     checkbox_prop_name = None
+    date_prop_name = None
 
     try:
         if is_data_source and hasattr(client, "data_sources"):
@@ -184,12 +276,16 @@ def get_database_schema_props(client: Client, database_id: str):
                 title_prop_name = p_name
             elif p_type == "checkbox":
                 checkbox_prop_name = p_name
+            elif p_type == "date":
+                date_prop_name = p_name
 
         update_payload = {}
         if title_prop_name and title_prop_name != "Lezione":
             update_payload[title_prop_name] = {"name": "Lezione"}
         if not checkbox_prop_name:
             update_payload["Appunti"] = {"checkbox": {}}
+        if not date_prop_name:
+            update_payload["Data"] = {"date": {}}
 
         if update_payload:
             try:
@@ -205,6 +301,8 @@ def get_database_schema_props(client: Client, database_id: str):
                         title_prop_name = p_name
                     elif p_type == "checkbox":
                         checkbox_prop_name = p_name
+                    elif p_type == "date":
+                        date_prop_name = p_name
             except Exception as e_upd:
                 print(f"Avviso aggiornamento schema Notion: {e_upd}")
     except Exception as e:
@@ -214,8 +312,10 @@ def get_database_schema_props(client: Client, database_id: str):
         title_prop_name = "Lezione"
     if not checkbox_prop_name:
         checkbox_prop_name = "Appunti"
+    if not date_prop_name:
+        date_prop_name = "Data"
 
-    return title_prop_name, checkbox_prop_name
+    return title_prop_name, checkbox_prop_name, date_prop_name
 
 def get_available_courses(corsi_page_id=None, api_key=None):
     """
@@ -252,7 +352,7 @@ def get_or_create_course_database(course_page_id, course_name="Corso", api_key=N
     """
     Cerca il Database delle Lezioni direttamente dentro la pagina del corso.
     Se la pagina del corso contiene un database inline, lo usa.
-    Altrimenti crea un DATABASE INLINE direttamente nella pagina con colonne 'Lezione' (Title) e 'Appunti' (Checkbox).
+    Altrimenti crea un DATABASE INLINE direttamente nella pagina con colonne 'Lezione' (Title), 'Appunti' (Checkbox) e 'Data' (Date).
     """
     client = get_notion_client(api_key)
     if not client or not course_page_id:
@@ -285,17 +385,90 @@ def get_or_create_course_database(course_page_id, course_name="Corso", api_key=N
             title=[{"type": "text", "text": {"content": f"Lezioni {course_name}"}}],
             properties={
                 "Lezione": {"title": {}},
-                "Appunti": {"checkbox": {}}
+                "Appunti": {"checkbox": {}},
+                "Data": {"date": {}}
             }
         )
         return new_db.get("id"), None
     except Exception as e:
         return None, f"Errore creazione tabella inline su Notion: {e}"
 
-def get_or_create_lesson_entry(database_id, lesson_date_str, api_key=None):
+def find_original_version_page(results, title_prop):
+    """
+    Individua SEMPRE la pagina della prima versione originale (senza suffisso Versione X o la più vecchia per data di creazione).
+    """
+    if not results:
+        return None
+    
+    # Cerca la pagina che NON ha (Versione nel titolo
+    for page in results:
+        t_list = page.get("properties", {}).get(title_prop, {}).get("title", [])
+        title_str = t_list[0].get("plain_text", "") if t_list else ""
+        if "(Versione" not in title_str:
+            return page.get("id")
+            
+    # Fallback: ordina per data di creazione (più vecchia prima)
+    sorted_pages = sorted(results, key=lambda x: x.get("created_time", ""))
+    return sorted_pages[0].get("id")
+
+def get_notion_page_markdown(page_id, api_key=None) -> str:
+    """
+    Legge i blocchi di una pagina Notion e ricostruisce fedelmente il testo in formato Markdown
+    ripristinando formule LaTeX ($...$), grassetto, corsivo e codice.
+    """
+    client = get_notion_client(api_key)
+    if not client or not page_id:
+        return ""
+    clean_id = format_notion_id(page_id)
+    try:
+        response = client.blocks.children.list(block_id=clean_id)
+        lines = []
+        for block in response.get("results", []):
+            b_type = block.get("type")
+            if b_type in ["paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list_item", "numbered_list_item", "quote", "code", "callout", "equation"]:
+                
+                if b_type == "equation":
+                    expr = block.get("equation", {}).get("expression", "")
+                    if expr:
+                        lines.append(f"$$\n{expr}\n$$")
+                    continue
+
+                r_text = block.get(b_type, {}).get("rich_text", [])
+                text_content = rich_text_to_markdown(r_text)
+                
+                if b_type == "heading_1":
+                    lines.append(f"# {text_content}")
+                elif b_type == "heading_2":
+                    lines.append(f"## {text_content}")
+                elif b_type == "heading_3":
+                    lines.append(f"### {text_content}")
+                elif b_type == "bulleted_list_item":
+                    lines.append(f"- {text_content}")
+                elif b_type == "numbered_list_item":
+                    lines.append(f"1. {text_content}")
+                elif b_type == "quote":
+                    lines.append(f"> {text_content}")
+                elif b_type == "callout":
+                    lines.append(f"> 📌 {text_content}")
+                elif b_type == "code":
+                    lang = block.get("code", {}).get("language", "")
+                    lines.append(f"```{lang}\n{text_content}\n```")
+                else:
+                    lines.append(text_content)
+            elif b_type == "divider":
+                lines.append("---")
+                
+        raw_markdown = "\n\n".join(lines)
+        return clean_markdown_for_streamlit(raw_markdown)
+    except Exception as e:
+        print(f"Errore lettura blocchi da Notion: {e}")
+        return ""
+
+def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False, api_key=None):
     """
     Trova o crea la riga della lezione per la data specificata nella tabella.
-    Rileva dinamicamente i nomi reali delle colonne del Database Notion per evitare errori.
+    - Se la data coincide MA il video è DIVERSO (is_same_video=False): accoda gli appunti alla prima versione originale.
+    - Se è lo STESSO video rielaborato (is_same_video=True): crea una nuova riga distinta per la versione (Versione X).
     Restituisce (page_id, is_existing).
     """
     client = get_notion_client(api_key)
@@ -304,8 +477,9 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, api_key=None):
 
     clean_db_id = format_notion_id(database_id)
     target_id, is_data_source = get_target_data_source_id(client, clean_db_id)
-    title_prop, checkbox_prop = get_database_schema_props(client, clean_db_id)
-    lesson_title = f"Lezione {lesson_date_str}"
+    title_prop, checkbox_prop, date_prop = get_database_schema_props(client, clean_db_id)
+    base_lesson_title = f"Lezione {lesson_date_str}"
+    iso_date = format_iso_date(lesson_date_str)
 
     filter_dict = {
         "property": title_prop,
@@ -317,21 +491,32 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, api_key=None):
     try:
         query_res = query_notion_database(client, clean_db_id, filter_dict)
         results = query_res.get("results", []) if isinstance(query_res, dict) else []
-        if results:
-            page_id = results[0].get("id")
+        
+        # CASO A: La data coincide MA il link video è DIVERSO (is_same_video=False) -> ACCODA alla prima versione originale del giorno!
+        if results and not is_same_video:
+            first_page_id = find_original_version_page(results, title_prop)
             if checkbox_prop:
                 try:
                     client.pages.update(
-                        page_id=page_id,
+                        page_id=first_page_id,
                         properties={checkbox_prop: {"checkbox": True}}
                     )
                 except Exception:
                     pass
-            return page_id, True, None
+            return first_page_id, True, None
+
+        # CASO B: Lo STESSO link video viene rielaborato (is_same_video=True) -> Crea una NUOVA RIGA per la versione!
+        if results and is_same_video:
+            version_num = len(results) + 1
+            lesson_title = f"{base_lesson_title} (Versione {version_num})"
+        else:
+            lesson_title = base_lesson_title
+
     except Exception as e:
         print(f"Avviso ricerca riga esistente lezione su Notion: {e}")
+        lesson_title = base_lesson_title
 
-    # Se non trovata, crea una nuova riga nella tabella agganciandosi al data_source_id (Notion SDK 3.x) o database_id
+    # Crea la nuova riga con il valore del campo Data impostato al formato ISO YYYY-MM-DD
     try:
         page_props = {
             title_prop: {
@@ -340,6 +525,8 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, api_key=None):
         }
         if checkbox_prop:
             page_props[checkbox_prop] = {"checkbox": True}
+        if date_prop:
+            page_props[date_prop] = {"date": {"start": iso_date}}
 
         parent_dict = {"data_source_id": target_id} if is_data_source else {"database_id": target_id}
 
@@ -365,18 +552,22 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, api_key=None):
 def markdown_to_notion_blocks(markdown_text: str):
     """
     Converte una stringa di testo Markdown in una lista di blocchi Notion API,
-    interpretando ed applicando la formattazione inline (Grassetto, Corsivo, Equazioni LaTeX, Codice).
+    interpretando ed applicando la formattazione inline, formule LaTeX a blocco e titoli a tutti i livelli.
     """
     blocks = []
     lines = markdown_text.splitlines()
+    
     in_code_block = False
     code_lines = []
     code_language = "plain text"
+    
+    in_math_block = False
+    math_lines = []
 
     for line in lines:
         stripped = line.strip()
 
-        # Blocchi di codice ```
+        # 1. Blocchi di codice ```
         if stripped.startswith("```"):
             if in_code_block:
                 code_content = "\n".join(code_lines)
@@ -400,10 +591,64 @@ def markdown_to_notion_blocks(markdown_text: str):
             code_lines.append(line)
             continue
 
+        # 2. Formule matematiche a blocco $$ ... $$ o \begin{equation} ... \end{equation}
+        if stripped.startswith("$$") and stripped.endswith("$$") and len(stripped) > 4:
+            expr = stripped[2:-2].strip()
+            expr = re.sub(r'\\begin\{equation\*?\}', '', expr)
+            expr = re.sub(r'\\end\{equation\*?\}', '', expr).strip()
+            if expr:
+                blocks.append({
+                    "object": "block",
+                    "type": "equation",
+                    "equation": {"expression": expr[:2000]}
+                })
+            continue
+
+        if stripped.startswith("$$") or stripped.startswith(r"\begin{equation"):
+            if in_math_block:
+                math_content = "\n".join(math_lines)
+                expr = math_content.replace("$$", "").strip()
+                expr = re.sub(r'\\begin\{equation\*?\}', '', expr)
+                expr = re.sub(r'\\end\{equation\*?\}', '', expr).strip()
+                if expr:
+                    blocks.append({
+                        "object": "block",
+                        "type": "equation",
+                        "equation": {"expression": expr[:2000]}
+                    })
+                in_math_block = False
+                math_lines = []
+            else:
+                in_math_block = True
+                cleaned_start = stripped.replace("$$", "").strip()
+                if cleaned_start and not cleaned_start.startswith(r"\begin{equation"):
+                    math_lines.append(cleaned_start)
+            continue
+
+        if in_math_block:
+            if stripped.endswith("$$") or stripped.startswith(r"\end{equation"):
+                cleaned_end = stripped.replace("$$", "").strip()
+                if cleaned_end and not cleaned_end.startswith(r"\end{equation"):
+                    math_lines.append(cleaned_end)
+                math_content = "\n".join(math_lines)
+                expr = re.sub(r'\\begin\{equation\*?\}', '', math_content)
+                expr = re.sub(r'\\end\{equation\*?\}', '', expr).strip()
+                if expr:
+                    blocks.append({
+                        "object": "block",
+                        "type": "equation",
+                        "equation": {"expression": expr[:2000]}
+                    })
+                in_math_block = False
+                math_lines = []
+            else:
+                math_lines.append(line)
+            continue
+
         if not stripped:
             continue
 
-        # Separatore ---
+        # 3. Separatore ---
         if stripped in ["---", "***", "___"]:
             blocks.append({
                 "object": "block",
@@ -412,7 +657,7 @@ def markdown_to_notion_blocks(markdown_text: str):
             })
             continue
 
-        # Titoli #, ##, ###
+        # 4. Titoli #, ##, ###, ####, #####, ######
         if stripped.startswith("# "):
             blocks.append({
                 "object": "block",
@@ -430,6 +675,13 @@ def markdown_to_notion_blocks(markdown_text: str):
                 "object": "block",
                 "type": "heading_3",
                 "heading_3": {"rich_text": parse_inline_markdown(stripped[4:])}
+            })
+        elif re.match(r'^#{4,6}\s', stripped):
+            cleaned_title = re.sub(r'^#{4,6}\s', '', stripped)
+            blocks.append({
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {"rich_text": parse_inline_markdown(cleaned_title)}
             })
         # Liste puntate - o *
         elif stripped.startswith("- ") or stripped.startswith("* "):
