@@ -121,6 +121,21 @@ if 'canvas_chat_history' not in st.session_state:
     st.session_state.canvas_chat_history = []
 if 'pending_agent_stream' not in st.session_state:
     st.session_state.pending_agent_stream = False
+if 'notion_save_thread' not in st.session_state:
+    st.session_state.notion_save_thread = None
+
+# --- FUNZIONE DI VERIFICA LOCK NOTION ---
+def is_notion_saving_active():
+    thread = st.session_state.get("notion_save_thread")
+    if thread:
+        if thread.is_alive():
+            return True
+        else:
+            st.session_state.notion_save_thread = None
+            st.session_state.notion_status = "✅ Pagina aggiornata su Notion con successo!"
+            st.toast("✅ Pagina aggiornata su Notion con successo!", icon="🎉")
+            return False
+    return False
 
 # --- FORM DI INSERIMENTO ---
 col_left, col_right = st.columns([2, 1])
@@ -244,7 +259,7 @@ st.divider()
 # --- BOTTONE DI AVVIO ---
 can_start = url and (do_transcript or do_markdown_notion or do_latex) and (not already_processed or force_reprocess)
 
-if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
+if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start or is_notion_saving_active()):
     # Blocco tassativo se il video è duplicato e l'utente non ha spuntato force_reprocess
     if already_processed and not force_reprocess:
         st.error("⛔ Elaborazione bloccata: questa lezione è già stata inserita nel database. Spunta 'Elabora ed esporta comunque' se vuoi rielaborarla.")
@@ -343,8 +358,12 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
 
                 status.update(label="🎉 Elaborazione completata!", state="complete", expanded=False)
 
-# --- FUNZIONE DI SALVATAGGIO SU NOTION ---
+# --- FUNZIONE DI SALVATAGGIO SU NOTION CON LOCK E SNAPSHOT ---
 def save_current_notes_to_notion():
+    if is_notion_saving_active():
+        st.warning("⏳ Un salvataggio su Notion è già in corso. Attendi che il salvataggio precedente sia completato.")
+        return
+
     target_pid = st.session_state.get("current_notion_page_id")
     if not target_pid:
         db_id, _ = notion_helper.get_or_create_course_database(selected_course_page_id, selected_course, notion_token)
@@ -352,24 +371,50 @@ def save_current_notes_to_notion():
         st.session_state.current_notion_page_id = target_pid
 
     if target_pid:
+        # Fotografia Immutabile (Snapshot) del testo Markdown presente in questo istante
+        markdown_snapshot = str(st.session_state.appunti_generati)
+
         bg_thread = threading.Thread(
             target=notion_helper.update_notion_page_in_place,
-            args=(target_pid, st.session_state.appunti_generati, notion_token),
+            args=(target_pid, markdown_snapshot, notion_token),
             daemon=True
         )
+        st.session_state.notion_save_thread = bg_thread
         bg_thread.start()
 
         clean_pid = notion_helper.format_notion_id(target_pid).replace("-", "")
         st.session_state.notion_page_url = f"https://www.notion.so/{clean_pid}"
-        st.session_state.notion_status = "⚡ Salvataggio inviato in background! La pagina Notion si aggiornerà in pochissimi istanti."
-        st.toast("⚡ Aggiornamento Notion inviato in background!", icon="🚀")
-        st.success("⚡ Salvataggio inviato su Notion in modalità asincrona! Puoi continuare a lavorare subito.")
+        st.session_state.notion_status = "⚡ Salvataggio avviato su Notion con snapshot protetto!"
+        st.session_state.canvas_view_radio = "👁️ Anteprima Formattata"
+        st.session_state.standard_view_radio = "👁️ Anteprima Formattata"
+        st.toast("⚡ Salvataggio avviato su Notion! Passato ad Anteprima Formattata.", icon="🚀")
+        st.rerun()
     else:
         st.error("Impossibile individuare la pagina Notion da aggiornare.")
+
+# --- COMPONENTI FRAGMENT PER IL PULSANTE NOTION (ISOLAMENTO SENZA REFRESH PAGINA) ---
+@st.fragment(run_every="2s")
+def render_notion_save_button_split():
+    if is_notion_saving_active():
+        st.button("⏳ Salvataggio Notion...", disabled=True, key="btn_save_canvas_split_dis", use_container_width=True)
+    else:
+        if st.button("💾 Salva su Notion", type="primary", key="btn_save_canvas_split", use_container_width=True):
+            save_current_notes_to_notion()
+
+@st.fragment(run_every="2s")
+def render_notion_save_button_tab():
+    if is_notion_saving_active():
+        st.button("⏳ Salvataggio Notion...", disabled=True, key="btn_save_edited_notion_dis", use_container_width=True)
+    else:
+        if st.button("📤 Salva su Notion", use_container_width=True, key="btn_save_edited_notion"):
+            save_current_notes_to_notion()
 
 # --- RENDERING DEI RISULTATI ---
 if st.session_state.testo_estratto or st.session_state.appunti_generati:
     st.write("")
+    is_saving = is_notion_saving_active()
+    is_locked = is_saving or st.session_state.pending_agent_stream
+
     if st.session_state.notion_status:
         c_status, c_btn = st.columns([3, 1])
         with c_status:
@@ -391,8 +436,7 @@ if st.session_state.testo_estratto or st.session_state.appunti_generati:
             canvas_view_mode = st.radio("Modalità Canvas:", ["👁️ Anteprima Formattata", "✏️ Modifica Manuale"], horizontal=True, key="canvas_view_radio")
         with tb_col3:
             st.write("")
-            if st.button("💾 Salva su Notion", type="primary", key="btn_save_canvas_split", use_container_width=True):
-                save_current_notes_to_notion()
+            render_notion_save_button_split()
             if st.button("❌ Chiudi Chat", use_container_width=True, key="btn_close_canvas_chat"):
                 st.session_state.show_canvas_chat = False
                 st.rerun()
@@ -402,6 +446,10 @@ if st.session_state.testo_estratto or st.session_state.appunti_generati:
         col_chat, col_canvas = st.columns([2, 3])
 
         quick_prompt = None
+        is_saving = is_notion_saving_active()
+
+        if is_saving:
+            st.caption("⏳ **Sincronizzazione Notion in corso in background...** Puoi continuare a modificare gli appunti o chattare!")
 
         # Pre-renderizza la colonna Canvas a destra per consentire lo streaming live
         with col_canvas:
@@ -437,14 +485,14 @@ if st.session_state.testo_estratto or st.session_state.appunti_generati:
                 with st.expander("⚡ Azioni Rapide (Prompt Pronti)", expanded=False):
                     qc1, qc2 = st.columns(2)
                     with qc1:
-                        if st.button("🔍 Espandi concetti", use_container_width=True, key="qp_expand"):
+                        if st.button("🔍 Espandi concetti", use_container_width=True, key="qp_expand", disabled=st.session_state.pending_agent_stream):
                             quick_prompt = "Trova ed espandi i concetti chiave o meno dettagliati negli appunti."
-                        if st.button("💡 Aggiungi riepilogo", use_container_width=True, key="qp_summary"):
+                        if st.button("💡 Aggiungi riepilogo", use_container_width=True, key="qp_summary", disabled=st.session_state.pending_agent_stream):
                             quick_prompt = "Aggiungi una sezione di riepilogo con i punti chiave all'inizio degli appunti."
                     with qc2:
-                        if st.button("✂️ Sintetizza", use_container_width=True, key="qp_shorten"):
+                        if st.button("✂️ Sintetizza", use_container_width=True, key="qp_shorten", disabled=st.session_state.pending_agent_stream):
                             quick_prompt = "Sintetizza i paragrafi più lunghi mantenendo concetti e formule intatte."
-                        if st.button("📝 Migliora stile", use_container_width=True, key="qp_style"):
+                        if st.button("📝 Migliora stile", use_container_width=True, key="qp_style", disabled=st.session_state.pending_agent_stream):
                             quick_prompt = "Migliora la forma grammaticale, la leggibilità e la formattazione dello stile."
 
                 for msg in st.session_state.canvas_chat_history:
@@ -499,7 +547,7 @@ if st.session_state.testo_estratto or st.session_state.appunti_generati:
                             st.session_state.pending_agent_stream = False
                             st.error(f"Errore durante l'elaborazione con l'Agente AI: {str(e)}")
 
-            user_input = st.chat_input("Chiedi all'Agente AI di modificare il Canvas...")
+            user_input = st.chat_input("Chiedi all'Agente AI di modificare il Canvas...", disabled=st.session_state.pending_agent_stream)
             active_prompt = user_input or quick_prompt
             if active_prompt and not st.session_state.pending_agent_stream:
                 st.session_state.canvas_chat_history.append({"role": "user", "content": active_prompt})
@@ -524,7 +572,7 @@ if st.session_state.testo_estratto or st.session_state.appunti_generati:
                     if "Appunti" in tab_name:
                         sub_col1, sub_col2 = st.columns([2, 2])
                         with sub_col1:
-                            view_mode = st.radio("Modalità visualizzazione:", ["👁️ Anteprima Formattata", "✏️ Modifica Markdown"], horizontal=True)
+                            view_mode = st.radio("Modalità visualizzazione:", ["👁️ Anteprima Formattata", "✏️ Modifica Markdown"], horizontal=True, key="standard_view_radio")
                         with sub_col2:
                             st.write("")
                             btn_c1, btn_c2 = st.columns([1, 1])
@@ -533,8 +581,7 @@ if st.session_state.testo_estratto or st.session_state.appunti_generati:
                                     st.session_state.show_canvas_chat = True
                                     st.rerun()
                             with btn_c2:
-                                if st.button("📤 Salva su Notion", use_container_width=True, key="btn_save_edited_notion"):
-                                    save_current_notes_to_notion()
+                                render_notion_save_button_tab()
 
                         st.divider()
 
