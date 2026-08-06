@@ -271,3 +271,112 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
 
     status_msg = "Appunti accodati alla lezione del giorno su Notion!" if is_existing else "Lezione creata con successo su Notion!"
     return True, status_msg, lesson_page_id
+
+CANVAS_AGENT_PROMPT = """Sei un assistente AI specializzato nella redazione, perfezionamento e revisione di appunti universitari in formato Markdown (Canvas Editor).
+
+Il tuo compito è modificare, migliorare, espandere o sintetizzare il documento Markdown attuale seguendo con precisione l'istruzione dell'utente.
+
+REGOLE ESSENZIALI:
+1. Devi restituire la tua risposta usando TASSATIVAMENTE il seguente formato delimitato:
+
+<<<CHAT_RESPONSE>>>
+Breve messaggio chiaro e sintetico per l'utente che spiega cosa hai fatto o risponde alla sua richiesta.
+<<<UPDATED_CANVAS>>>
+Il testo Markdown COMPLETO ed aggiornato degli appunti, incorporando le modifiche o aggiunte richieste.
+
+2. Mantieni la formattazione Markdown pulita e professionale (titoli #, ##, elenchi puntati, blocchi codice, formule LaTeX $...$ o $$...$$).
+3. Non rimuovere contenuti importanti degli appunti esistenti a meno che l'utente non lo richieda esplicitamente.
+4. Il testo sotto <<<UPDATED_CANVAS>>> deve essere l'INTERO documento pronto per lo studio e utilizzabile nel Canvas."""
+
+def agent_edit_notes(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
+    """
+    Agente AI per la modifica interattiva degli appunti nel Canvas.
+    Riceve il testo attuale del Canvas, la trascrizione grezza originale (se disponibile), l'istruzione dell'utente e lo storico dialogo.
+    Restituisce tupla: (success_bool, chat_reply, updated_markdown)
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return False, "Chiave API di Google non trovata. Assicurati di aver configurato GOOGLE_API_KEY.", current_markdown
+
+    client = genai.Client(api_key=api_key)
+
+    history_formatted = ""
+    if chat_history:
+        for msg in chat_history[-6:]:
+            role = "Utente" if msg.get("role") == "user" else "Assistente"
+            history_formatted += f"{role}: {msg.get('content')}\n"
+
+    transcript_section = f"\n\nTRASCRIZIONE GREZZA ORIGINALE:\n---\n{raw_transcript}\n---" if raw_transcript else ""
+
+    user_payload = f"""DOCUMENTO APPUNTI ATTUALE (CANVAS):
+---
+{current_markdown}
+---{transcript_section}
+
+STORICO DIALOGO RECENTE:
+{history_formatted if history_formatted else '(Nessun messaggio precedente)'}
+
+ISTRUZIONE DELL'UTENTE:
+{user_instruction}"""
+
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=f"{CANVAS_AGENT_PROMPT}\n\n{user_payload}"
+        )
+        raw_text = response.text or ""
+        
+        if "<<<CHAT_RESPONSE>>>" in raw_text and "<<<UPDATED_CANVAS>>>" in raw_text:
+            parts = raw_text.split("<<<UPDATED_CANVAS>>>")
+            chat_part = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
+            canvas_part = parts[1].strip()
+            chat_reply = chat_part
+            updated_markdown = notion_helper.clean_markdown_for_streamlit(canvas_part)
+        else:
+            chat_reply = "Ho applicato le modifiche richieste agli appunti nel Canvas."
+            updated_markdown = notion_helper.clean_markdown_for_streamlit(raw_text)
+
+        return True, chat_reply, updated_markdown
+    except Exception as e:
+        return False, f"Errore durante l'elaborazione con l'Agente AI: {str(e)}", current_markdown
+
+def agent_edit_notes_stream(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
+    """
+    Generatore streaming per l'Agente AI del Canvas.
+    Invia i chunk di testo in tempo reale man mano che arrivano dal modello Gemini, includendo la trascrizione grezza originale se fornita.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("Chiave API di Google non trovata. Configura GOOGLE_API_KEY.")
+
+    client = genai.Client(api_key=api_key)
+
+    history_formatted = ""
+    if chat_history:
+        for msg in chat_history[-6:]:
+            role = "Utente" if msg.get("role") == "user" else "Assistente"
+            history_formatted += f"{role}: {msg.get('content')}\n"
+
+    transcript_section = f"\n\nTRASCRIZIONE GREZZA ORIGINALE:\n---\n{raw_transcript}\n---" if raw_transcript else ""
+
+    user_payload = f"""DOCUMENTO APPUNTI ATTUALE (CANVAS):
+---
+{current_markdown}
+---{transcript_section}
+
+STORICO DIALOGO RECENTE:
+{history_formatted if history_formatted else '(Nessun messaggio precedente)'}
+
+ISTRUZIONE DELL'UTENTE:
+{user_instruction}"""
+
+    response_stream = client.models.generate_content_stream(
+        model=model_name,
+        contents=f"{CANVAS_AGENT_PROMPT}\n\n{user_payload}"
+    )
+
+    for chunk in response_stream:
+        if chunk.text:
+            yield chunk.text
+
+

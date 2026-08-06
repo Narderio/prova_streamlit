@@ -16,7 +16,7 @@ importlib.reload(backend)
 importlib.reload(notion_helper)
 importlib.reload(supabase_client)
 
-from backend import download_and_process, generate_notes, generate_latex, export_to_notion, extract_vimeo_ids, DEFAULT_PROMPT
+from backend import download_and_process, generate_notes, generate_latex, export_to_notion, extract_vimeo_ids, agent_edit_notes, agent_edit_notes_stream, DEFAULT_PROMPT
 
 load_dotenv()
 
@@ -53,6 +53,21 @@ def st_copy_to_clipboard(text, label="📋 Copia"):
 def update_appunti_from_editor():
     if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
         st.session_state.appunti_generati = st.session_state.markdown_editor_area
+    elif "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
+        st.session_state.appunti_generati = st.session_state.markdown_editor_area_canvas
+
+# --- FUNZIONI DI CACHING PER ELIMINARE RITARDI DI RETE AD OGNI RERUN ---
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_get_available_courses(corsi_id, token):
+    return notion_helper.get_available_courses(corsi_id, token)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_is_video_processed(v_id):
+    return supabase_client.is_video_processed(v_id)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_get_notion_page_markdown(page_id, token):
+    return notion_helper.get_notion_page_markdown(page_id, api_key=token)
 
 # --- INIZIO INTERFACCIA STREAMLIT ---
 st.set_page_config(page_title="Vimeo to Notion University Notes", page_icon="🎓", layout="wide")
@@ -100,6 +115,12 @@ if 'notion_page_url' not in st.session_state:
     st.session_state.notion_page_url = None
 if 'current_notion_page_id' not in st.session_state:
     st.session_state.current_notion_page_id = None
+if 'show_canvas_chat' not in st.session_state:
+    st.session_state.show_canvas_chat = False
+if 'canvas_chat_history' not in st.session_state:
+    st.session_state.canvas_chat_history = []
+if 'pending_agent_stream' not in st.session_state:
+    st.session_state.pending_agent_stream = False
 
 # --- FORM DI INSERIMENTO ---
 col_left, col_right = st.columns([2, 1])
@@ -110,8 +131,8 @@ notion_corsi_id = os.getenv("NOTION_CORSI_PAGE_ID")
 with col_left:
     url = st.text_input("Link video Vimeo", placeholder="https://vimeo.com/123456789/hash...")
 
-    # Lettura automatica corsi da Notion (usando chiavi da .env)
-    courses_dict = notion_helper.get_available_courses(notion_corsi_id, notion_token)
+    # Lettura automatica corsi da Notion (usando chiavi da .env con caching)
+    courses_dict = cached_get_available_courses(notion_corsi_id, notion_token)
     if courses_dict:
         course_names = list(courses_dict.keys())
         selected_course = st.selectbox("Materia / Corso (Letto da Notion)", course_names)
@@ -186,7 +207,7 @@ already_processed = False
 force_reprocess = False
 
 if video_id_preview:
-    is_proc, record = supabase_client.is_video_processed(video_id_preview)
+    is_proc, record = cached_is_video_processed(video_id_preview)
     if is_proc:
         already_processed = True
         saved_page_id = record.get("notion_page_id")
@@ -212,7 +233,7 @@ if video_id_preview:
 
         # Autocaricamento automatico dell'INTERA pagina di appunti da Notion
         if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
-            fetched_notes = notion_helper.get_notion_page_markdown(saved_page_id, api_key=notion_token)
+            fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
             if fetched_notes:
                 st.session_state.appunti_generati = fetched_notes
                 st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
@@ -239,6 +260,8 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
         st.session_state.latex_generato = None
         st.session_state.notion_status = None
         st.session_state.notion_page_url = None
+        st.session_state.show_canvas_chat = False
+        st.session_state.canvas_chat_history = []
 
         with st.status("⚙️ Elaborazione in corso...", expanded=True) as status:
             # 1. Download trascrizione Vimeo
@@ -320,6 +343,30 @@ if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start):
 
                 status.update(label="🎉 Elaborazione completata!", state="complete", expanded=False)
 
+# --- FUNZIONE DI SALVATAGGIO SU NOTION ---
+def save_current_notes_to_notion():
+    target_pid = st.session_state.get("current_notion_page_id")
+    if not target_pid:
+        db_id, _ = notion_helper.get_or_create_course_database(selected_course_page_id, selected_course, notion_token)
+        target_pid, _, _ = notion_helper.get_or_create_lesson_entry(db_id, formatted_date_str, is_same_video=already_processed, api_key=notion_token)
+        st.session_state.current_notion_page_id = target_pid
+
+    if target_pid:
+        bg_thread = threading.Thread(
+            target=notion_helper.update_notion_page_in_place,
+            args=(target_pid, st.session_state.appunti_generati, notion_token),
+            daemon=True
+        )
+        bg_thread.start()
+
+        clean_pid = notion_helper.format_notion_id(target_pid).replace("-", "")
+        st.session_state.notion_page_url = f"https://www.notion.so/{clean_pid}"
+        st.session_state.notion_status = "⚡ Salvataggio inviato in background! La pagina Notion si aggiornerà in pochissimi istanti."
+        st.toast("⚡ Aggiornamento Notion inviato in background!", icon="🚀")
+        st.success("⚡ Salvataggio inviato su Notion in modalità asincrona! Puoi continuare a lavorare subito.")
+    else:
+        st.error("Impossibile individuare la pagina Notion da aggiornare.")
+
 # --- RENDERING DEI RISULTATI ---
 if st.session_state.testo_estratto or st.session_state.appunti_generati:
     st.write("")
@@ -331,89 +378,203 @@ if st.session_state.testo_estratto or st.session_state.appunti_generati:
             if st.session_state.notion_page_url:
                 st.link_button("📖 Apri Lezione su Notion", st.session_state.notion_page_url, use_container_width=True)
 
-    tabs_to_show = []
-    if st.session_state.appunti_generati:
-        tabs_to_show.append("📚 Appunti (Markdown)")
-    if st.session_state.latex_generato:
-        tabs_to_show.append("📄 Codice LaTeX")
-    if st.session_state.testo_estratto:
-        tabs_to_show.append("📝 Trascrizione Grezza")
+    # --- MODALITÀ CANVAS SPLIT-SCREEN CHAT ---
+    if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
+        st.divider()
+        tb_col1, tb_col2, tb_col3 = st.columns([2, 2, 1])
+        with tb_col1:
+            st.markdown("## 🎨 Canvas Editor & AI Assistant")
+            word_count = len(st.session_state.appunti_generati.split())
+            token_est = len(st.session_state.appunti_generati) // 4
+            st.caption(f"📌 Contesto Attivo | 📊 Parole: **{word_count}** | ⚡ Tokens: **~{token_est}**")
+        with tb_col2:
+            canvas_view_mode = st.radio("Modalità Canvas:", ["👁️ Anteprima Formattata", "✏️ Modifica Manuale"], horizontal=True, key="canvas_view_radio")
+        with tb_col3:
+            st.write("")
+            if st.button("💾 Salva su Notion", type="primary", key="btn_save_canvas_split", use_container_width=True):
+                save_current_notes_to_notion()
+            if st.button("❌ Chiudi Chat", use_container_width=True, key="btn_close_canvas_chat"):
+                st.session_state.show_canvas_chat = False
+                st.rerun()
 
-    if tabs_to_show:
-        tabs = st.tabs(tabs_to_show)
+        st.divider()
 
-        for i, tab_name in enumerate(tabs_to_show):
-            with tabs[i]:
-                if "Appunti" in tab_name:
-                    sub_col1, sub_col2 = st.columns([3, 1])
-                    with sub_col1:
-                        view_mode = st.radio("Modalità visualizzazione:", ["👁️ Anteprima Formattata", "✏️ Modifica Markdown"], horizontal=True)
-                    with sub_col2:
-                        st.write("")
-                        if st.button("📤 Salva / Sovrascrivi su Notion", type="primary", key="btn_save_edited_notion"):
-                            target_pid = st.session_state.get("current_notion_page_id")
-                            if not target_pid:
-                                db_id, _ = notion_helper.get_or_create_course_database(selected_course_page_id, selected_course, notion_token)
-                                target_pid, _, _ = notion_helper.get_or_create_lesson_entry(db_id, formatted_date_str, is_same_video=already_processed, api_key=notion_token)
-                                st.session_state.current_notion_page_id = target_pid
+        col_chat, col_canvas = st.columns([2, 3])
 
-                            if target_pid:
-                                # Avvio ASINCRONO non bloccante in background thread
-                                bg_thread = threading.Thread(
-                                    target=notion_helper.update_notion_page_in_place,
-                                    args=(target_pid, st.session_state.appunti_generati, notion_token),
-                                    daemon=True
-                                )
-                                bg_thread.start()
+        quick_prompt = None
 
-                                clean_pid = notion_helper.format_notion_id(target_pid).replace("-", "")
-                                st.session_state.notion_page_url = f"https://www.notion.so/{clean_pid}"
-                                st.session_state.notion_status = "⚡ Salvataggio inviato in background! La pagina Notion si aggiornera' in pochissimi istanti."
-                                st.toast("⚡ Aggiornamento Notion inviato in background!", icon="🚀")
-                                st.success("⚡ Salvataggio inviato su Notion in modalità asincrona! Puoi continuare a lavorare subito.")
-                            else:
-                                st.error("Impossibile individuare la pagina Notion da aggiornare.")
-
-                    st.divider()
-
-                    if view_mode == "✏️ Modifica Markdown":
-                        edited_text = st.text_area(
-                            "Modifica liberamente il testo Markdown dell'intera pagina:",
+        # Pre-renderizza la colonna Canvas a destra per consentire lo streaming live
+        with col_canvas:
+            st.markdown("### 📄 Canvas Appunti (Live)")
+            canvas_container = st.container(height=520)
+            with canvas_container:
+                canvas_placeholder = st.empty()
+                if not st.session_state.pending_agent_stream:
+                    if canvas_view_mode == "✏️ Modifica Manuale":
+                        edited_text_canvas = st.text_area(
+                            "Modifica direttamente il testo nel Canvas:",
                             value=st.session_state.appunti_generati,
-                            height=550,
-                            key="markdown_editor_area",
+                            height=460,
+                            key="markdown_editor_area_canvas",
                             on_change=update_appunti_from_editor
                         )
-                        # Sincronizza immediatamente lo stato se l'utente digita
-                        st.session_state.appunti_generati = edited_text
+                        st.session_state.appunti_generati = edited_text_canvas
                     else:
-                        # Assicura la sincronizzazione anche se la chiave dell'editor esiste in sessione
-                        if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
-                            st.session_state.appunti_generati = st.session_state.markdown_editor_area
-                        cleaned_render = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati)
-                        st.markdown(cleaned_render)
+                        if "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
+                            st.session_state.appunti_generati = st.session_state.markdown_editor_area_canvas
+                        cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati)
+                        canvas_placeholder.markdown(cleaned_render_canvas)
 
-                    st.divider()
+        with col_chat:
+            st.markdown("### 💬 Chatbot Assistant")
+            
+            chat_container = st.container(height=520)
 
-                    c1, c2 = st.columns([1, 4])
-                    with c1:
-                        st.download_button("💾 Scarica .md", st.session_state.appunti_generati, f"appunti_{formatted_date_str.replace('/', '_')}.md")
-                    with c2:
-                        st_copy_to_clipboard(st.session_state.appunti_generati, "📋 Copia Markdown")
+            with chat_container:
+                if not st.session_state.canvas_chat_history:
+                    st.info("👋 Ciao! Ho agganciato i tuoi appunti al Canvas. Scrivi una richiesta qui sotto per modificarli in tempo reale con l'Agente AI.")
+                
+                with st.expander("⚡ Azioni Rapide (Prompt Pronti)", expanded=False):
+                    qc1, qc2 = st.columns(2)
+                    with qc1:
+                        if st.button("🔍 Espandi concetti", use_container_width=True, key="qp_expand"):
+                            quick_prompt = "Trova ed espandi i concetti chiave o meno dettagliati negli appunti."
+                        if st.button("💡 Aggiungi riepilogo", use_container_width=True, key="qp_summary"):
+                            quick_prompt = "Aggiungi una sezione di riepilogo con i punti chiave all'inizio degli appunti."
+                    with qc2:
+                        if st.button("✂️ Sintetizza", use_container_width=True, key="qp_shorten"):
+                            quick_prompt = "Sintetizza i paragrafi più lunghi mantenendo concetti e formule intatte."
+                        if st.button("📝 Migliora stile", use_container_width=True, key="qp_style"):
+                            quick_prompt = "Migliora la forma grammaticale, la leggibilità e la formattazione dello stile."
 
-                elif "LaTeX" in tab_name:
-                    st.code(st.session_state.latex_generato, language="latex")
-                    st.divider()
-                    c3, c4 = st.columns([1, 4])
-                    with c3:
-                        st.download_button("💾 Scarica .tex", st.session_state.latex_generato, f"appunti_{formatted_date_str.replace('/', '_')}.tex")
-                    with c4:
-                        st_copy_to_clipboard(st.session_state.latex_generato, "📋 Copia LaTeX")
+                for msg in st.session_state.canvas_chat_history:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
 
-                elif "Trascrizione" in tab_name:
-                    st.text_area("Testo originale trascritto", st.session_state.testo_estratto, height=400)
-                    ct1, ct2 = st.columns([1, 4])
-                    with ct1:
-                        st.download_button("💾 Scarica .txt", st.session_state.testo_estratto, "trascrizione.txt")
-                    with ct2:
-                        st_copy_to_clipboard(st.session_state.testo_estratto, "📋 Copia Trascrizione")
+                # Se in attesa dello streaming, avvia il doppio streaming simultaneo su Chat e Canvas!
+                if st.session_state.pending_agent_stream:
+                    with st.chat_message("assistant"):
+                        chat_response_placeholder = st.empty()
+                        full_raw_response = ""
+                        
+                        try:
+                            last_user_prompt = st.session_state.canvas_chat_history[-1]["content"]
+                            stream_gen = agent_edit_notes_stream(
+                                current_markdown=st.session_state.appunti_generati,
+                                user_instruction=last_user_prompt,
+                                chat_history=st.session_state.canvas_chat_history[:-1],
+                                raw_transcript=st.session_state.testo_estratto,
+                                model_name=selected_model
+                            )
+                            
+                            for chunk_text in stream_gen:
+                                full_raw_response += chunk_text
+                                
+                                if "<<<UPDATED_CANVAS>>>" in full_raw_response:
+                                    parts = full_raw_response.split("<<<UPDATED_CANVAS>>>")
+                                    chat_part = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
+                                    canvas_part = parts[1].strip()
+                                    
+                                    chat_response_placeholder.markdown(chat_part)
+                                    canvas_placeholder.markdown(notion_helper.clean_markdown_for_streamlit(canvas_part))
+                                else:
+                                    chat_part = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip()
+                                    chat_response_placeholder.markdown(chat_part)
+                            
+                            if "<<<CHAT_RESPONSE>>>" in full_raw_response and "<<<UPDATED_CANVAS>>>" in full_raw_response:
+                                parts = full_raw_response.split("<<<UPDATED_CANVAS>>>")
+                                final_chat_reply = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
+                                final_canvas_md = notion_helper.clean_markdown_for_streamlit(parts[1].strip())
+                            else:
+                                final_chat_reply = full_raw_response.strip() or "Ho applicato le modifiche agli appunti nel Canvas."
+                                final_canvas_md = notion_helper.clean_markdown_for_streamlit(full_raw_response)
+                            
+                            st.session_state.appunti_generati = final_canvas_md
+                            st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply})
+                            st.session_state.pending_agent_stream = False
+                            st.toast("⚡ Canvas aggiornato in tempo reale!", icon="✅")
+                            st.rerun()
+
+                        except Exception as e:
+                            st.session_state.pending_agent_stream = False
+                            st.error(f"Errore durante l'elaborazione con l'Agente AI: {str(e)}")
+
+            user_input = st.chat_input("Chiedi all'Agente AI di modificare il Canvas...")
+            active_prompt = user_input or quick_prompt
+            if active_prompt and not st.session_state.pending_agent_stream:
+                st.session_state.canvas_chat_history.append({"role": "user", "content": active_prompt})
+                st.session_state.pending_agent_stream = True
+                st.rerun()
+
+    # --- MODALITÀ TABS STANDARD (SCHERMO INTERO) ---
+    else:
+        tabs_to_show = []
+        if st.session_state.appunti_generati:
+            tabs_to_show.append("📚 Appunti (Markdown)")
+        if st.session_state.latex_generato:
+            tabs_to_show.append("📄 Codice LaTeX")
+        if st.session_state.testo_estratto:
+            tabs_to_show.append("📝 Trascrizione Grezza")
+
+        if tabs_to_show:
+            tabs = st.tabs(tabs_to_show)
+
+            for i, tab_name in enumerate(tabs_to_show):
+                with tabs[i]:
+                    if "Appunti" in tab_name:
+                        sub_col1, sub_col2 = st.columns([2, 2])
+                        with sub_col1:
+                            view_mode = st.radio("Modalità visualizzazione:", ["👁️ Anteprima Formattata", "✏️ Modifica Markdown"], horizontal=True)
+                        with sub_col2:
+                            st.write("")
+                            btn_c1, btn_c2 = st.columns([1, 1])
+                            with btn_c1:
+                                if st.button("💬 Inserisci in Chat", type="primary", use_container_width=True, key="btn_open_canvas_chat"):
+                                    st.session_state.show_canvas_chat = True
+                                    st.rerun()
+                            with btn_c2:
+                                if st.button("📤 Salva su Notion", use_container_width=True, key="btn_save_edited_notion"):
+                                    save_current_notes_to_notion()
+
+                        st.divider()
+
+                        if view_mode == "✏️ Modifica Markdown":
+                            edited_text = st.text_area(
+                                "Modifica liberamente il testo Markdown dell'intera pagina:",
+                                value=st.session_state.appunti_generati,
+                                height=550,
+                                key="markdown_editor_area",
+                                on_change=update_appunti_from_editor
+                            )
+                            st.session_state.appunti_generati = edited_text
+                        else:
+                            if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
+                                st.session_state.appunti_generati = st.session_state.markdown_editor_area
+                            cleaned_render = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati)
+                            st.markdown(cleaned_render)
+
+                        st.divider()
+
+                        c1, c2 = st.columns([1, 4])
+                        with c1:
+                            st.download_button("💾 Scarica .md", st.session_state.appunti_generati, f"appunti_{formatted_date_str.replace('/', '_')}.md")
+                        with c2:
+                            st_copy_to_clipboard(st.session_state.appunti_generati, "📋 Copia Markdown")
+
+                    elif "LaTeX" in tab_name:
+                        st.code(st.session_state.latex_generato, language="latex")
+                        st.divider()
+                        c3, c4 = st.columns([1, 4])
+                        with c3:
+                            st.download_button("💾 Scarica .tex", st.session_state.latex_generato, f"appunti_{formatted_date_str.replace('/', '_')}.tex")
+                        with c4:
+                            st_copy_to_clipboard(st.session_state.latex_generato, "📋 Copia LaTeX")
+
+                    elif "Trascrizione" in tab_name:
+                        st.text_area("Testo originale trascritto", st.session_state.testo_estratto, height=400)
+                        ct1, ct2 = st.columns([1, 4])
+                        with ct1:
+                            st.download_button("💾 Scarica .txt", st.session_state.testo_estratto, "trascrizione.txt")
+                        with ct2:
+                            st_copy_to_clipboard(st.session_state.testo_estratto, "📋 Copia Trascrizione")
+
