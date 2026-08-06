@@ -20,6 +20,51 @@ def format_notion_id(id_str: str) -> str:
         return f"{clean_hex[:8]}-{clean_hex[8:12]}-{clean_hex[12:16]}-{clean_hex[16:20]}-{clean_hex[20:]}"
     return id_str.strip()
 
+VALID_NOTION_LANGUAGES = {
+    "abap", "abc", "agda", "arduino", "ascii art", "assembly", "bash", "basic",
+    "bnf", "c", "c#", "c++", "clojure", "coffeescript", "coq", "css", "dart",
+    "dhall", "diff", "docker", "ebnf", "elixir", "elm", "erlang", "f#", "flow",
+    "fortran", "gherkin", "glsl", "go", "graphql", "groovy", "haskell", "hcl",
+    "html", "idris", "java", "javascript", "json", "julia", "kotlin", "latex",
+    "less", "lisp", "livescript", "llvm ir", "lua", "makefile", "markdown",
+    "markup", "matlab", "mathematica", "mermaid", "nix", "notion formula",
+    "objective-c", "ocaml", "pascal", "perl", "php", "plain text", "powershell",
+    "prolog", "protobuf", "purescript", "python", "r", "racket", "reason",
+    "ruby", "rust", "sass", "scala", "scheme", "scss", "shell", "smalltalk",
+    "solidity", "sql", "swift", "toml", "typescript", "vb.net", "verilog",
+    "vhdl", "visual basic", "webassembly", "xml", "yaml", "java/c/c++/c#"
+}
+
+LANGUAGE_ALIASES = {
+    "text": "plain text",
+    "txt": "plain text",
+    "plaintext": "plain text",
+    "py": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "sh": "bash",
+    "zsh": "bash",
+    "shell": "shell",
+    "cpp": "c++",
+    "cs": "c#",
+    "csharp": "c#",
+    "rb": "ruby",
+    "yml": "yaml",
+    "html/xml": "html",
+    "code": "plain text"
+}
+
+def sanitize_code_language(lang: str) -> str:
+    if not lang:
+        return "plain text"
+    lang_clean = lang.strip().lower()
+    if lang_clean in LANGUAGE_ALIASES:
+        return LANGUAGE_ALIASES[lang_clean]
+    if lang_clean in VALID_NOTION_LANGUAGES:
+        return lang_clean
+    return "plain text"
+
+
 def format_iso_date(date_val) -> str:
     """
     Convertitore universale di date in formato ISO 'YYYY-MM-DD'.
@@ -518,6 +563,25 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
                     lines.append(f"```{lang}\n{text_content}\n```")
                 else:
                     lines.append(text_content)
+            elif b_type == "table":
+                table_id = block.get("id")
+                has_header = block.get("table", {}).get("has_column_header", True)
+                try:
+                    row_res = client.blocks.children.list(block_id=table_id)
+                    row_blocks = row_res.get("results", [])
+                    table_lines = []
+                    for r_idx, r_block in enumerate(row_blocks):
+                        if r_block.get("type") == "table_row":
+                            cells = r_block.get("table_row", {}).get("cells", [])
+                            cell_texts = [rich_text_to_markdown(c) for c in cells]
+                            table_lines.append("| " + " | ".join(cell_texts) + " |")
+                            if r_idx == 0 and has_header:
+                                sep = "| " + " | ".join(["---"] * len(cells)) + " |"
+                                table_lines.append(sep)
+                    if table_lines:
+                        lines.append("\n".join(table_lines))
+                except Exception as e_tbl:
+                    print(f"Avviso lettura tabella Notion: {e_tbl}")
             elif b_type == "divider":
                 lines.append("---")
                 
@@ -529,94 +593,9 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
 
 def update_notion_page_in_place(lesson_page_id, markdown_text, api_key=None):
     """
-    Aggiorna i blocchi della pagina Notion in PARALLELO (ad alta velocita' con 20 worker simultanei),
-    aggiornando i blocchi esistenti in-place senza far attendere il frontend.
+    Svuota i blocchi esistenti della pagina Notion e vi riscrive i nuovi blocchi in ordine esatto.
     """
-    client = get_notion_client(api_key)
-    if not client or not lesson_page_id:
-        return False, "Client Notion o Page ID mancante."
-
-    clean_page_id = format_notion_id(lesson_page_id)
-    new_blocks = markdown_to_notion_blocks(markdown_text)
-
-    try:
-        # 1. Recupera i blocchi attuali della pagina Notion (con paginazione)
-        existing_blocks = []
-        has_more = True
-        start_cursor = None
-        while has_more:
-            kwargs = {"block_id": clean_page_id}
-            if start_cursor:
-                kwargs["start_cursor"] = start_cursor
-            res = client.blocks.children.list(**kwargs)
-            existing_blocks.extend(res.get("results", []))
-            has_more = res.get("has_more", False)
-            start_cursor = res.get("next_cursor")
-
-        min_len = min(len(existing_blocks), len(new_blocks))
-
-        def update_single_block(index):
-            old_b = existing_blocks[index]
-            old_b_id = old_b.get("id")
-            old_type = old_b.get("type")
-            new_b = new_blocks[index]
-            new_type = new_b.get("type")
-            b_payload = new_b.get(new_type)
-            
-            if old_type == new_type:
-                try:
-                    client.blocks.update(
-                        block_id=old_b_id,
-                        **{new_type: b_payload}
-                    )
-                    return
-                except Exception:
-                    pass
-
-            try:
-                client.blocks.delete(block_id=old_b_id)
-            except Exception:
-                pass
-            client.blocks.children.append(block_id=clean_page_id, children=[new_b])
-
-        # Esecuzione PARALLELA a 20 worker per massima velocita' istantanea
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            futures = [executor.submit(update_single_block, i) for i in range(min_len)]
-            concurrent.futures.wait(futures)
-
-        # Se ci sono piu' blocchi nuovi che vecchi, appendi i rimanenti alla fine in blocchi da 80 in parallelo
-        if len(new_blocks) > len(existing_blocks):
-            remaining_new = new_blocks[len(existing_blocks):]
-            chunk_size = 80
-            chunks = [remaining_new[i:i + chunk_size] for i in range(0, len(remaining_new), chunk_size)]
-            
-            def append_chunk(chunk):
-                client.blocks.children.append(
-                    block_id=clean_page_id,
-                    children=chunk
-                )
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(append_chunk, c) for c in chunks]
-                concurrent.futures.wait(futures)
-
-        # Se ci sono piu' blocchi vecchi che nuovi, rimuovi quelli in eccesso in parallelo
-        elif len(existing_blocks) > len(new_blocks):
-            def delete_extra_block(index):
-                old_b_id = existing_blocks[index].get("id")
-                try:
-                    client.blocks.delete(block_id=old_b_id)
-                except Exception:
-                    pass
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-                futures = [executor.submit(delete_extra_block, i) for i in range(len(new_blocks), len(existing_blocks))]
-                concurrent.futures.wait(futures)
-
-        return True, None
-    except Exception as e:
-        print(f"Avviso aggiornamento in-place Notion: {e}")
-        return overwrite_notion_page(lesson_page_id, markdown_text, api_key=api_key)
+    return overwrite_notion_page(lesson_page_id, markdown_text, api_key=api_key)
 
 def overwrite_notion_page(lesson_page_id, markdown_text, api_key=None):
     """
@@ -747,49 +726,122 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False
     except Exception as e:
         return None, False, f"Errore creazione riga lezione su Notion: {e}"
 
+def parse_markdown_table(table_lines: list) -> dict | None:
+    """
+    Converte una lista di linee Markdown che costituiscono una tabella in un blocco 'table' nativo per Notion API,
+    con relative righe 'table_row' e celle formattate tramite parse_inline_markdown.
+    """
+    if not table_lines:
+        return None
+
+    parsed_rows = []
+    has_column_header = False
+
+    for line in table_lines:
+        s = line.strip()
+        if not s:
+            continue
+        parts = s.split("|")
+        if s.startswith("|"):
+            parts = parts[1:]
+        if s.endswith("|"):
+            parts = parts[:-1]
+
+        cells = [p.strip() for p in parts]
+        if not cells or all(c == "" for c in cells):
+            continue
+
+        # Verifica riga separatrice (es. | :--- | :--- |)
+        is_separator = all(re.match(r'^:?-+:?$', c) for c in cells if c)
+        if is_separator:
+            has_column_header = True
+            continue
+
+        parsed_rows.append(cells)
+
+    if not parsed_rows:
+        return None
+
+    table_width = max(len(row) for row in parsed_rows)
+    if table_width == 0:
+        return None
+
+    table_rows = []
+    for row in parsed_rows:
+        cells_payload = []
+        for cell_text in row:
+            rt = parse_inline_markdown(cell_text)
+            if not rt:
+                rt = [{"type": "text", "text": {"content": ""}}]
+            cells_payload.append(rt)
+
+        while len(cells_payload) < table_width:
+            cells_payload.append([{"type": "text", "text": {"content": ""}}])
+
+        table_rows.append({
+            "type": "table_row",
+            "table_row": {
+                "cells": cells_payload
+            }
+        })
+
+    return {
+        "object": "block",
+        "type": "table",
+        "table": {
+            "table_width": table_width,
+            "has_column_header": has_column_header,
+            "has_row_header": False,
+            "children": table_rows
+        }
+    }
+
 def markdown_to_notion_blocks(markdown_text: str):
     """
     Converte una stringa di testo Markdown in una lista di blocchi Notion API,
-    interpretando ed applicando la formattazione inline, formule LaTeX a blocco, titoli e blocchi Callout (📌).
+    interpretando ed applicando formattazione inline, formule LaTeX, tabelle native, titoli e Callout (📌).
     """
     blocks = []
     lines = markdown_text.splitlines()
-    
-    in_code_block = False
-    code_lines = []
-    code_language = "plain text"
-    
-    in_math_block = False
-    math_lines = []
+    N = len(lines)
+    idx = 0
 
-    for line in lines:
+    while idx < N:
+        line = lines[idx]
         stripped = line.strip()
 
         # 1. Blocchi di codice ```
         if stripped.startswith("```"):
-            if in_code_block:
-                code_content = "\n".join(code_lines)
-                blocks.append({
-                    "object": "block",
-                    "type": "code",
-                    "code": {
-                        "rich_text": [{"type": "text", "text": {"content": code_content[:2000]}}],
-                        "language": code_language or "plain text"
-                    }
-                })
-                in_code_block = False
-                code_lines = []
-            else:
-                in_code_block = True
-                lang = stripped.replace("```", "").strip()
-                code_language = lang if lang else "plain text"
+            code_lines = []
+            lang = stripped.replace("```", "").strip()
+            code_language = sanitize_code_language(lang)
+            idx += 1
+            while idx < N:
+                if lines[idx].strip().startswith("```"):
+                    idx += 1
+                    break
+                code_lines.append(lines[idx])
+                idx += 1
+            code_content = "\n".join(code_lines)
+            rich_text = []
+            for i in range(0, max(1, len(code_content)), 2000):
+                chunk_text = code_content[i:i+2000]
+                if chunk_text:
+                    rich_text.append({"type": "text", "text": {"content": chunk_text}})
+            if not rich_text:
+                rich_text = [{"type": "text", "text": {"content": ""}}]
+
+            blocks.append({
+                "object": "block",
+                "type": "code",
+                "code": {
+                    "rich_text": rich_text,
+                    "language": code_language
+                }
+            })
             continue
 
-        if in_code_block:
-            code_lines.append(line)
-            continue
-
-        # 2. Formule matematiche a blocco $$ ... $$ o \begin{equation} ... \end{equation}
+        # 2. Formule matematiche a blocco $$ ... $$ o \begin{equation}
         if stripped.startswith("$$") and stripped.endswith("$$") and len(stripped) > 4:
             expr = stripped[2:-2].strip()
             expr = re.sub(r'\\begin\{equation\*?\}', '', expr)
@@ -800,62 +852,68 @@ def markdown_to_notion_blocks(markdown_text: str):
                     "type": "equation",
                     "equation": {"expression": expr[:2000]}
                 })
+            idx += 1
             continue
 
         if stripped.startswith("$$") or stripped.startswith(r"\begin{equation"):
-            if in_math_block:
-                math_content = "\n".join(math_lines)
-                expr = math_content.replace("$$", "").strip()
-                expr = re.sub(r'\\begin\{equation\*?\}', '', expr)
-                expr = re.sub(r'\\end\{equation\*?\}', '', expr).strip()
-                if expr:
-                    blocks.append({
-                        "object": "block",
-                        "type": "equation",
-                        "equation": {"expression": expr[:2000]}
-                    })
-                in_math_block = False
-                math_lines = []
-            else:
-                in_math_block = True
-                cleaned_start = stripped.replace("$$", "").strip()
-                if cleaned_start and not cleaned_start.startswith(r"\begin{equation"):
-                    math_lines.append(cleaned_start)
+            math_lines = []
+            cleaned_start = stripped.replace("$$", "").strip()
+            if cleaned_start and not cleaned_start.startswith(r"\begin{equation"):
+                math_lines.append(cleaned_start)
+            idx += 1
+            while idx < N:
+                cur = lines[idx].strip()
+                if cur.endswith("$$") or cur.startswith(r"\end{equation"):
+                    cleaned_end = cur.replace("$$", "").strip()
+                    if cleaned_end and not cleaned_end.startswith(r"\end{equation"):
+                        math_lines.append(cleaned_end)
+                    idx += 1
+                    break
+                math_lines.append(lines[idx])
+                idx += 1
+            math_content = "\n".join(math_lines)
+            expr = re.sub(r'\\begin\{equation\*?\}', '', math_content)
+            expr = re.sub(r'\\end\{equation\*?\}', '', expr).strip()
+            if expr:
+                blocks.append({
+                    "object": "block",
+                    "type": "equation",
+                    "equation": {"expression": expr[:2000]}
+                })
             continue
 
-        if in_math_block:
-            if stripped.endswith("$$") or stripped.startswith(r"\end{equation"):
-                cleaned_end = stripped.replace("$$", "").strip()
-                if cleaned_end and not cleaned_end.startswith(r"\end{equation"):
-                    math_lines.append(cleaned_end)
-                math_content = "\n".join(math_lines)
-                expr = re.sub(r'\\begin\{equation\*?\}', '', math_content)
-                expr = re.sub(r'\\end\{equation\*?\}', '', expr).strip()
-                if expr:
-                    blocks.append({
-                        "object": "block",
-                        "type": "equation",
-                        "equation": {"expression": expr[:2000]}
-                    })
-                in_math_block = False
-                math_lines = []
-            else:
-                math_lines.append(line)
+        # 3. Tabelle Markdown (righe che iniziano con '|')
+        if stripped.startswith("|"):
+            table_lines = []
+            while idx < N:
+                cur = lines[idx].strip()
+                if cur.startswith("|"):
+                    table_lines.append(lines[idx])
+                    idx += 1
+                elif not cur and idx + 1 < N and lines[idx + 1].strip().startswith("|"):
+                    idx += 1
+                else:
+                    break
+            tbl_block = parse_markdown_table(table_lines)
+            if tbl_block:
+                blocks.append(tbl_block)
             continue
 
         if not stripped:
+            idx += 1
             continue
 
-        # 3. Separatore ---
+        # 4. Separatore ---
         if stripped in ["---", "***", "___"]:
             blocks.append({
                 "object": "block",
                 "type": "divider",
                 "divider": {}
             })
+            idx += 1
             continue
 
-        # 4. Titoli #, ##, ###, ####, #####, ######
+        # 5. Titoli #, ##, ###, ####, #####, ######
         if stripped.startswith("# "):
             blocks.append({
                 "object": "block",
@@ -881,7 +939,7 @@ def markdown_to_notion_blocks(markdown_text: str):
                 "type": "heading_3",
                 "heading_3": {"rich_text": parse_inline_markdown(cleaned_title)}
             })
-        # 5. Callout con emoji (📌, 📝, 💡, ⚠️, 🎓, ℹ️)
+        # 6. Callout con emoji (📌, 📝, 💡, ⚠️, 🎓, ℹ️)
         elif stripped.startswith("> ") and any(e in stripped for e in ["📌", "📝", "💡", "⚠️", "🎓", "ℹ️"]):
             match_callout = re.match(r'^>\s*([📌📝💡⚠️🎓ℹ️])\s*(.*)$', stripped)
             if match_callout:
@@ -895,21 +953,20 @@ def markdown_to_notion_blocks(markdown_text: str):
                         "icon": {"type": "emoji", "emoji": emoji_char}
                     }
                 })
-                continue
             else:
                 blocks.append({
                     "object": "block",
                     "type": "quote",
                     "quote": {"rich_text": parse_inline_markdown(stripped[2:])}
                 })
-        # Liste puntate - o *
+        # 7. Liste puntate - o *
         elif stripped.startswith("- ") or stripped.startswith("* "):
             blocks.append({
                 "object": "block",
                 "type": "bulleted_list_item",
                 "bulleted_list_item": {"rich_text": parse_inline_markdown(stripped[2:])}
             })
-        # Liste numerate 1. 2.
+        # 8. Liste numerate 1. 2.
         elif re.match(r'^\d+\.\s', stripped):
             content = re.sub(r'^\d+\.\s', '', stripped)
             blocks.append({
@@ -917,20 +974,22 @@ def markdown_to_notion_blocks(markdown_text: str):
                 "type": "numbered_list_item",
                 "numbered_list_item": {"rich_text": parse_inline_markdown(content)}
             })
-        # Quotes / Citazioni
+        # 9. Quotes / Citazioni
         elif stripped.startswith("> "):
             blocks.append({
                 "object": "block",
                 "type": "quote",
                 "quote": {"rich_text": parse_inline_markdown(stripped[2:])}
             })
-        # Paragrafi normali
+        # 10. Paragrafi normali
         else:
             blocks.append({
                 "object": "block",
                 "type": "paragraph",
                 "paragraph": {"rich_text": parse_inline_markdown(stripped)}
             })
+
+        idx += 1
 
     return blocks
 
@@ -962,18 +1021,25 @@ def append_notes_to_page(lesson_page_id, blocks, is_append=False, api_key=None):
             ])
         final_blocks.extend(blocks)
 
-        chunk_size = 80
+        chunk_size = 50
         chunks = [final_blocks[i:i + chunk_size] for i in range(0, len(final_blocks), chunk_size)]
 
-        def append_chunk(chunk):
-            client.blocks.children.append(
-                block_id=clean_page_id,
-                children=chunk
-            )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(append_chunk, c) for c in chunks]
-            concurrent.futures.wait(futures)
+        for chunk in chunks:
+            try:
+                client.blocks.children.append(
+                    block_id=clean_page_id,
+                    children=chunk
+                )
+            except Exception as e_chunk:
+                print(f"Avviso inserimento chunk Notion ({e_chunk}), tentativo blocco per blocco...")
+                for single_block in chunk:
+                    try:
+                        client.blocks.children.append(
+                            block_id=clean_page_id,
+                            children=[single_block]
+                        )
+                    except Exception as e_single:
+                        print(f"Errore inserimento singolo blocco su Notion: {e_single}")
 
         return True, None
     except Exception as e:
