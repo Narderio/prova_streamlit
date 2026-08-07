@@ -272,21 +272,27 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
     status_msg = "Appunti accodati alla lezione del giorno su Notion!" if is_existing else "Lezione creata con successo su Notion!"
     return True, status_msg, lesson_page_id
 
-CANVAS_AGENT_PROMPT = """Sei un assistente AI specializzato nella redazione, perfezionamento e revisione di appunti universitari in formato Markdown (Canvas Editor).
+CANVAS_AGENT_PROMPT = """Sei un assistente AI specializzato ed affiancato ad un Canvas di APPUNTI UNIVERSITARI.
 
-Il tuo compito è modificare, migliorare, espandere o sintetizzare il documento Markdown attuale seguendo con precisione l'istruzione dell'utente.
+REGOLE TASSATIVE E INVIOLABILI:
+1. IL CANVAS CONTIENE ESCLUSIVAMENTE APPUNTI DIDATTICI ED ACCADEMICI DELLA LEZIONE:
+   - NON inserire MAI nel Canvas testo conversazionale, presentazioni personali, guide su cosa sai fare, spiegazioni sul funzionamento dell'AI o meta-commenti.
+   - Il Canvas NON deve MAI contenere frasi tipo "Ho aggiunto una sezione...", "Ecco cosa so fare...", "Sono il tuo assistente...".
 
-REGOLE ESSENZIALI:
-1. Devi restituire la tua risposta usando TASSATIVAMENTE il seguente formato delimitato:
+2. DISTINZIONE RIGIDA DEGLI INTENTI:
+   a) DOMANDE SU DI TE, SALUTI, CHIARIMENTI O CONVERSAZIONE (es. "cosa sai fare?", "chi sei?", "cosa puoi fare?", "spiegami X"):
+      - Rispondi in modo professionale ed esauriente sotto <<<CHAT_RESPONSE>>>.
+      - Scrivi TASSATIVAMENTE ed unicamente la parola NO_CHANGE sotto <<<UPDATED_CANVAS>>>.
+   
+   b) ISTRUZIONI ESPLICITE DI MODIFICA DEGLI APPUNTI (es. "aggiungi un paragrafo su X negli appunti", "sintetizza la sezione 2", "correggi l'equazione Y"):
+      - Spiega brevemente cosa hai fatto nella chat sotto <<<CHAT_RESPONSE>>>.
+      - Fornisci l'INTERO documento Markdown degli appunti aggiornato sotto <<<UPDATED_CANVAS>>> (contenente SOLO ed ESCLUSIVAMENTE materiale didattico).
 
+FORMATO DI RISPOSTA TASSATIVO ED OBBLIGATORIO:
 <<<CHAT_RESPONSE>>>
-Breve messaggio chiaro e sintetico per l'utente che spiega cosa hai fatto o risponde alla sua richiesta.
+[Risposta conversazionale o spiegazione per l'utente]
 <<<UPDATED_CANVAS>>>
-Il testo Markdown COMPLETO ed aggiornato degli appunti, incorporando le modifiche o aggiunte richieste.
-
-2. Mantieni la formattazione Markdown pulita e professionale (titoli #, ##, elenchi puntati, blocchi codice, formule LaTeX $...$ o $$...$$).
-3. Non rimuovere contenuti importanti degli appunti esistenti a meno che l'utente non lo richieda esplicitamente.
-4. Il testo sotto <<<UPDATED_CANVAS>>> deve essere l'INTERO documento pronto per lo studio e utilizzabile nel Canvas."""
+[Testo Markdown degli appunti completi OPPURE la sola parola NO_CHANGE]"""
 
 def agent_edit_notes(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
     """
