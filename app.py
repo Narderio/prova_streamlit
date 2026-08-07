@@ -53,8 +53,10 @@ def st_copy_to_clipboard(text, label="📋 Copia"):
 def update_appunti_from_editor():
     if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
         st.session_state.appunti_generati = st.session_state.markdown_editor_area
+        st.session_state._last_valid_appunti = st.session_state.markdown_editor_area
     elif "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
         st.session_state.appunti_generati = st.session_state.markdown_editor_area_canvas
+        st.session_state._last_valid_appunti = st.session_state.markdown_editor_area_canvas
 
 # --- FUNZIONI DI CACHING PER ELIMINARE RITARDI DI RETE AD OGNI RERUN ---
 @st.cache_data(ttl=600, show_spinner=False)
@@ -284,23 +286,46 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 height: 100vh !important;
             }
             
-            [data-testid="stSidebar"], [data-testid="collapsedControl"], header[data-testid="stHeader"] {
+            /* ELIMINA OGNI TIPO DI HEADER E DELLO SPAZIO IN ALTO NATIVO DI STREAMLIT */
+            header, [data-testid="stHeader"], .stAppHeader, div[data-testid="stHeader"], [data-testid="stSidebar"], [data-testid="collapsedControl"] {
                 display: none !important;
+                height: 0px !important;
+                min-height: 0px !important;
+                max-height: 0px !important;
+                padding: 0 !important;
+                margin: 0 !important;
             }
-            .main .block-container {
-                padding-top: 3.5rem !important;
-                padding-bottom: 1rem !important;
-                padding-left: 1.5rem !important;
-                padding-right: 1.5rem !important;
+            .main, .stMain, [data-testid="stMain"], .block-container, [data-testid="stBlockContainer"],
+            div[data-testid="stAppViewContainer"] > section.main {
+                padding-top: 0px !important;
+                margin-top: 0px !important;
+            }
+            .main .block-container, [data-testid="stBlockContainer"] {
+                padding-top: 0px !important;
+                padding-bottom: 0.5rem !important;
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
                 max-width: 100% !important;
                 height: 100vh !important;
                 overflow: hidden !important;
             }
+            div[data-testid="stAppViewContainer"] {
+                padding-top: 0px !important;
+                margin-top: 0px !important;
+            }
+            div[data-testid="stElementContainer"]:first-child,
+            div[data-testid="stVerticalBlock"]:first-child,
+            div[data-testid="stVerticalBlockGroup"]:first-child {
+                margin-top: 0px !important;
+                padding-top: 0px !important;
+            }
 
             /* CONTENITORE PRINCIPALE A 3 COLONNE CON AMPIO SPAZIO SUPERIORE */
-            .main .block-container > div[data-testid="stElementContainer"] > div[data-testid="stHorizontalBlock"] {
+            .main .block-container > div[data-testid="stElementContainer"] > div[data-testid="stHorizontalBlock"],
+            .main .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stHorizontalBlock"],
+            .main .block-container div[data-testid="stHorizontalBlock"]:first-of-type {
                 flex-wrap: nowrap !important;
-                height: calc(100vh - 80px) !important;
+                height: calc(100vh - 25px) !important;
                 overflow: visible !important;
                 margin-top: 0 !important;
                 padding-top: 0 !important;
@@ -333,8 +358,8 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
             /* 1. PANNELLO CHAT (Sinistra) - ALTEZZA REGOLATA PER VISIBILITÀ */
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) {
-                height: calc(100vh - 120px) !important;
-                max-height: calc(100vh - 120px) !important;
+                height: calc(100vh - 35px) !important;
+                max-height: calc(100vh - 35px) !important;
                 overflow: hidden !important;
                 padding-right: 0.5rem !important;
                 display: flex !important;
@@ -353,11 +378,11 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) {
                 background-color: #1a1a1a !important;
                 border-radius: 16px !important;
-                padding: 1rem 1.2rem !important;
+                padding: 0.8rem 1.2rem !important;
                 border: 1px solid #333333 !important;
                 box-shadow: 0 4px 25px rgba(0,0,0,0.5) !important;
-                height: calc(100vh - 120px) !important;
-                max-height: calc(100vh - 120px) !important;
+                height: calc(100vh - 35px) !important;
+                max-height: calc(100vh - 35px) !important;
                 overflow-x: hidden !important;
                 overflow-y: hidden !important;
                 display: flex !important;
@@ -737,21 +762,28 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         if trigger_latex_regen:
             trigger_background_latex_regen(selected_model)
 
-        if "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
+        # PROTEZIONE ANTI-SPARIZIONE APPUNTI: Sincronizza ed esegui il fallback sul backup protetto
+        if st.session_state.get("canvas_edit_mode_toggle") and "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
             st.session_state.appunti_generati = st.session_state.markdown_editor_area_canvas
-        
-        cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati).strip()
+
+        if (not st.session_state.appunti_generati or not str(st.session_state.appunti_generati).strip()) and st.session_state.get("_last_valid_appunti"):
+            st.session_state.appunti_generati = st.session_state._last_valid_appunti
+
+        if st.session_state.appunti_generati and len(str(st.session_state.appunti_generati).strip()) > 0:
+            st.session_state._last_valid_appunti = st.session_state.appunti_generati
+
+        cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "").strip()
 
         if st.session_state.latex_generato:
             tab_canvas_md, tab_canvas_lat = st.tabs(["📚 Appunti (Markdown)", "📄 Codice LaTeX"])
             with tab_canvas_md:
-                canvas_scroll_area_md = st.container(height=520, border=False)
+                canvas_scroll_area_md = st.container(height=600, border=False)
                 with canvas_scroll_area_md:
                     if st.session_state.canvas_edit_mode_toggle:
                         edited_text_canvas = st.text_area(
                             "Modifica direttamente il testo nel Canvas:",
                             value=st.session_state.appunti_generati,
-                            height=500,
+                            height=580,
                             key="markdown_editor_area_canvas",
                             on_change=update_appunti_from_editor
                         )
@@ -761,13 +793,13 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         canvas_placeholder.markdown(cleaned_render_canvas)
 
             with tab_canvas_lat:
-                canvas_scroll_area_lat = st.container(height=520, border=False)
+                canvas_scroll_area_lat = st.container(height=600, border=False)
                 with canvas_scroll_area_lat:
                     if st.session_state.canvas_edit_mode_toggle:
                         edited_latex_canvas = st.text_area(
                             "Modifica direttamente il codice LaTeX nel Canvas:",
                             value=st.session_state.latex_generato if st.session_state.latex_generato else "",
-                            height=500,
+                            height=580,
                             key="latex_editor_area_canvas"
                         )
                         st.session_state.latex_generato = edited_latex_canvas
@@ -780,13 +812,13 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         with c_lat2:
                             st_copy_to_clipboard(st.session_state.latex_generato, "📋 Copia LaTeX")
         else:
-            canvas_scroll_area = st.container(height=580, border=False)
+            canvas_scroll_area = st.container(height=660, border=False)
             with canvas_scroll_area:
                 if st.session_state.canvas_edit_mode_toggle:
                     edited_text_canvas = st.text_area(
                         "Modifica direttamente il testo nel Canvas:",
                         value=st.session_state.appunti_generati,
-                        height=580,
+                        height=660,
                         key="markdown_editor_area_canvas",
                         on_change=update_appunti_from_editor
                     )
@@ -822,7 +854,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         st.markdown("<h3 style='margin:0 0 0.8rem 0; color:#ffffff;'>💬 Chatbot Assistant</h3>", unsafe_allow_html=True)
         
         # Contenitore di scroll nativo per la chat senza bordi visibili
-        chat_scroll_area = st.container(height=570, border=False)
+        chat_scroll_area = st.container(height=650, border=False)
         with chat_scroll_area:
             st.markdown("<div style='height: 16px; width: 100%;'></div>", unsafe_allow_html=True)
             for msg in st.session_state.canvas_chat_history:
@@ -883,8 +915,8 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         st.error(f"❌ Errore durante la risposta dell'Assistente: {str(e)}")
                         st.session_state.canvas_chat_history.append({"role": "assistant", "content": f"⚠️ Si è verificato un errore durante l'elaborazione: {str(e)}"})
                         st.rerun()
-            # Spaziatore inferiore di 180px per dare ampio spazio in fondo all'ultimo messaggio
-            st.markdown("<div id='chat-bottom-spacer' style='height: 180px; width: 100%;'></div>", unsafe_allow_html=True)
+            # Spaziatore inferiore di 30px per dare la giusta spaziatura in fondo all'ultimo messaggio
+            st.markdown("<div id='chat-bottom-spacer' style='height: 30px; width: 100%;'></div>", unsafe_allow_html=True)
 
         # Campo chat_input POSIZIONATO FISSO IN BASSO A SINISTRA
         user_input = st.chat_input("Chiedi all'Assistente AI di modificare il Canvas...", disabled=st.session_state.pending_agent_stream)
