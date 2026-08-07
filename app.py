@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import backend
 import notion_helper
 import supabase_client
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # Ricarica dinamica moduli per garantire che le modifiche al codice backend siano sempre applicate
 importlib.reload(backend)
@@ -136,6 +137,50 @@ def is_notion_saving_active():
             return False
     return False
 
+# --- FUNZIONE DI VERIFICA ED ESECUZIONE IN BACKGROUND PER LATEX ---
+def is_latex_regen_active():
+    thread = st.session_state.get("latex_regen_thread")
+    if thread:
+        if thread.is_alive():
+            return True
+        else:
+            st.session_state.latex_regen_thread = None
+            if st.session_state.get("latex_regen_error"):
+                err = st.session_state.latex_regen_error
+                st.session_state.latex_regen_error = None
+                st.toast(f"❌ Errore generazione LaTeX: {err}", icon="⚠️")
+            else:
+                st.toast("📄 Codice LaTeX generato con successo!", icon="✅")
+            st.rerun()
+            return False
+    return False
+
+def trigger_background_latex_regen(selected_model):
+    if is_latex_regen_active():
+        st.warning("⏳ Generazione LaTeX già in corso in background...")
+        return
+    notes_snap = st.session_state.get("appunti_generati")
+    if not notes_snap:
+        st.warning("Nessun appunto presente per generare il LaTeX.")
+        return
+    
+    def _worker(notes, model):
+        try:
+            success_lat, latex_res = generate_latex(notes, model_name=model)
+            if success_lat:
+                st.session_state.latex_generato = latex_res
+                st.session_state.latex_regen_error = None
+            else:
+                st.session_state.latex_regen_error = latex_res
+        except Exception as e:
+            st.session_state.latex_regen_error = str(e)
+            
+    t = threading.Thread(target=_worker, args=(notes_snap, selected_model), daemon=True)
+    add_script_run_ctx(t)
+    st.session_state.latex_regen_thread = t
+    t.start()
+    st.toast("⚡ Rigenerazione LaTeX avviata in background!", icon="📄")
+
 def sync_latex_reprocess_checkboxes():
     already_proc = st.session_state.get("already_processed", False)
     has_reprocess = st.session_state.get("chk_force_reprocess", False)
@@ -178,6 +223,7 @@ def save_current_notes_to_notion():
             args=(target_pid, markdown_snapshot, notion_token),
             daemon=True
         )
+        add_script_run_ctx(bg_thread)
         st.session_state.notion_save_thread = bg_thread
         bg_thread.start()
 
@@ -212,6 +258,16 @@ if 'canvas_ratio_mode' not in st.session_state:
     st.session_state.canvas_ratio_mode = "Canvas XXL"
 if 'canvas_width_pct' not in st.session_state:
     st.session_state.canvas_width_pct = 55
+
+# --- FRAGMENT DI VERIFICA AUTOMATICA THREAD IN BACKGROUND ---
+@st.fragment(run_every="2s")
+def check_background_threads():
+    is_notion_saving_active()
+    is_latex_regen_active()
+
+check_background_threads()
+is_saving_active = is_notion_saving_active()
+is_latex_active = is_latex_regen_active()
 
 # ==============================================================================
 # PAGINA DEDICATA: CANVAS STUDIO FULL-SCREEN (SE ATTIVA)
@@ -275,10 +331,10 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 margin-bottom: 0.5rem !important;
             }
 
-            /* 1. PANNELLO CHAT (Sinistra) - HEADER FISSO IN ALTO */
+            /* 1. PANNELLO CHAT (Sinistra) - ALTEZZA REGOLATA PER VISIBILITÀ */
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) {
-                height: calc(100vh - 90px) !important;
-                max-height: calc(100vh - 90px) !important;
+                height: calc(100vh - 120px) !important;
+                max-height: calc(100vh - 120px) !important;
                 overflow: hidden !important;
                 padding-right: 0.5rem !important;
                 display: flex !important;
@@ -293,16 +349,17 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 padding-right: 6px !important;
             }
 
-            /* 2. PANNELLO CANVAS (Destra) - HEADER E PULSANTI BLOCCATI PERMANENTEMENTE IN ALTO */
+            /* 2. PANNELLO CANVAS (Destra) - ALTEZZA REGOLATA PER VISIBILITÀ COMPLETA */
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) {
                 background-color: #1a1a1a !important;
                 border-radius: 16px !important;
                 padding: 1rem 1.2rem !important;
                 border: 1px solid #333333 !important;
                 box-shadow: 0 4px 25px rgba(0,0,0,0.5) !important;
-                height: calc(100vh - 90px) !important;
-                max-height: calc(100vh - 90px) !important;
-                overflow: hidden !important;
+                height: calc(100vh - 120px) !important;
+                max-height: calc(100vh - 120px) !important;
+                overflow-x: hidden !important;
+                overflow-y: hidden !important;
                 display: flex !important;
                 flex-direction: column !important;
                 justify-content: flex-start !important;
@@ -355,41 +412,73 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 border: none !important;
             }
 
-            /* 4. RESET TOTALE PER QUALSIASI SOTTO-COLONNA ANNIDATA (Header del Canvas) */
-            div[data-testid="stColumn"] div[data-testid="stColumn"] {
-                height: auto !important;
-                max-height: 45px !important;
+            /* 4. RESET TOTALE PER L'HEADER DEL CANVAS (prima riga con i pulsanti) */
+            /* Allineamento verticale centrato per la riga header */
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type {
+                align-items: center !important;
+                max-height: 48px !important;
                 min-height: 0 !important;
+                height: auto !important;
                 background-color: transparent !important;
                 background: transparent !important;
                 box-shadow: none !important;
-                border: none !important;
+                border: 0px none transparent !important;
+                outline: none !important;
                 overflow: visible !important;
+                gap: 0 !important;
             }
-
-            /* STILE PULITO UNIFORME PER TUTTI I PULSANTI ICONA NELL'HEADER */
-            div.stButton > button, 
-            div[data-testid="stButton"] > button {
-                background-color: #2b2b2b !important;
-                border: 1px solid #383838 !important;
-                border-radius: 8px !important;
-                color: #ffffff !important;
-                box-shadow: none !important;
-                padding: 6px 12px !important;
+            /* Colonne e wrapper interni dell'header: nessun bordo, nessun padding extra */
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type > div[data-testid="stColumn"] {
+                max-height: 48px !important;
+                min-height: 0 !important;
                 height: auto !important;
-                min-height: 38px !important;
-                width: auto !important;
-                display: inline-flex !important;
+                background-color: transparent !important;
+                background: transparent !important;
+                box-shadow: none !important;
+                border: 0px none transparent !important;
+                outline: none !important;
+                overflow: visible !important;
+                display: flex !important;
                 align-items: center !important;
                 justify-content: center !important;
-                transition: all 0.2s ease !important;
             }
-            div.stButton > button:hover,
-            div[data-testid="stButton"] > button:hover {
-                background-color: #383838 !important;
-                border-color: #38bdf8 !important;
-                color: #38bdf8 !important;
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stVerticalBlockBorderWrapper"],
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stVerticalBlockBorderWrapper"] > div,
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stVerticalBlock"],
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stVerticalBlockGroup"] {
+                max-height: 48px !important;
+                min-height: 0 !important;
+                height: auto !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                background-color: transparent !important;
+                background: transparent !important;
+                box-shadow: none !important;
+                border: 0px none transparent !important;
+                outline: none !important;
+                overflow: visible !important;
             }
+            /* Il primo stColumn dell'header (col_title) allinea a sinistra */
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type > div[data-testid="stColumn"]:first-child {
+                justify-content: flex-start !important;
+            }
+            /* Pulsanti dell'header Canvas: nessun bordo */
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type button {
+                border: none !important;
+                box-shadow: none !important;
+                background-color: transparent !important;
+                padding: 0.25rem 0.5rem !important;
+            }
+            /* Elimina margin-bottom dai contenitori widget nell'header */
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stElementContainer"] {
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type div.stButton {
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+
 
             /* STILIZZAZIONE DELLE 2 SCROLLBAR VERTICALI */
             .main .block-container > div[data-testid="stElementContainer"] > div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1)::-webkit-scrollbar,
@@ -616,72 +705,95 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
     
     col_chat, col_handle, col_canvas = st.columns([chat_pct, 2, canvas_pct])
 
-    is_saving = is_notion_saving_active()
-    if is_saving:
-        st.caption("⏳ **Sincronizzazione Notion in corso in background...** Puoi continuare a modificare gli appunti o chattare!")
-
     # 1. PANNELLO CANVAS A DESTRA (DOCUMENTO MOSTRATO PRIMA PER PERMETTERE IL LIVE STREAMING)
     canvas_placeholder = None
     with col_canvas:
-        col_title, col_btns = st.columns([6, 4])
+        col_title, b1, b2, b3, b4 = st.columns([6, 1, 1, 1, 1])
         with col_title:
             st.markdown("<h3 style='margin:0; padding:0; color:#ffffff;'>📄 Canvas Appunti</h3>", unsafe_allow_html=True)
-        with col_btns:
-            btn_group_left, btn_back_col = st.columns([3, 1])
-            with btn_group_left:
-                b1, b2, b3 = st.columns([1, 1, 1])
-                with b1:
-                    if 'canvas_edit_mode_toggle' not in st.session_state:
-                        st.session_state.canvas_edit_mode_toggle = False
-                    
-                    icon_view = "👁️" if st.session_state.canvas_edit_mode_toggle else "✏️"
-                    help_view = "Passa ad Anteprima Formattata" if st.session_state.canvas_edit_mode_toggle else "Passa a Modifica Manuale"
-                    
-                    if st.button(icon_view, help=help_view, key="btn_toggle_canvas_edit_icon"):
-                        st.session_state.canvas_edit_mode_toggle = not st.session_state.canvas_edit_mode_toggle
-                        st.rerun()
-                with b2:
-                    if st.button("📄", help="Rigenera il codice LaTeX dagli appunti del Canvas", key="btn_regen_latex_canvas"):
-                        if st.session_state.get("appunti_generati"):
-                            with st.spinner("📄 Rigenerazione codice LaTeX in corso..."):
-                                success_lat, latex_res = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
-                                if success_lat:
-                                    st.session_state.latex_generato = latex_res
-                                    st.toast("📄 Codice LaTeX rigenerato con successo!", icon="✅")
-                                    st.rerun()
-                                else:
-                                    st.error(f"Errore generazione LaTeX: {latex_res}")
-                        else:
-                            st.warning("Nessun appunto presente nel Canvas per generare il LaTeX.")
-                with b3:
-                    if st.button("📤", help="Salva subito gli appunti su Notion", key="btn_save_notion_icon"):
-                        save_current_notes_to_notion()
-            with btn_back_col:
-                if st.button("🔙", help="Torna al Form di configurazione Vimeo", key="btn_close_canvas_icon"):
-                    st.session_state.show_canvas_chat = False
-                    st.rerun()
+        with b1:
+            if 'canvas_edit_mode_toggle' not in st.session_state:
+                st.session_state.canvas_edit_mode_toggle = False
+            icon_view = "👁️" if st.session_state.canvas_edit_mode_toggle else "✏️"
+            help_view = "Anteprima" if st.session_state.canvas_edit_mode_toggle else "Modifica"
+            trigger_edit_toggle = st.button(icon_view, help=help_view, key="btn_toggle_canvas_edit_icon")
+        with b2:
+            trigger_latex_regen = st.button("📄", help="Rigenera LaTeX in background", key="btn_regen_latex_canvas", disabled=is_latex_active)
+        with b3:
+            trigger_notion_save = st.button("📤", help="Salva su Notion", key="btn_save_notion_icon")
+        with b4:
+            trigger_back = st.button("🔙", help="Torna al Form", key="btn_close_canvas_icon")
 
-        st.markdown("<hr style='margin: 0.1rem 0 0.1rem 0; border: none; border-top: 1px solid #333333;' />", unsafe_allow_html=True)
+        if trigger_edit_toggle:
+            st.session_state.canvas_edit_mode_toggle = not st.session_state.canvas_edit_mode_toggle
+            st.rerun()
+        if trigger_back:
+            st.session_state.show_canvas_chat = False
+            st.rerun()
+
+        if trigger_notion_save:
+            save_current_notes_to_notion()
+
+        if trigger_latex_regen:
+            trigger_background_latex_regen(selected_model)
 
         if "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
             st.session_state.appunti_generati = st.session_state.markdown_editor_area_canvas
         
         cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati).strip()
-        
-        canvas_scroll_area = st.container(height=650, border=False)
-        with canvas_scroll_area:
-            if st.session_state.canvas_edit_mode_toggle:
-                edited_text_canvas = st.text_area(
-                    "Modifica direttamente il testo nel Canvas:",
-                    value=st.session_state.appunti_generati,
-                    height=580,
-                    key="markdown_editor_area_canvas",
-                    on_change=update_appunti_from_editor
-                )
-                st.session_state.appunti_generati = edited_text_canvas
-            else:
-                canvas_placeholder = st.empty()
-                canvas_placeholder.markdown(cleaned_render_canvas)
+
+        if st.session_state.latex_generato:
+            tab_canvas_md, tab_canvas_lat = st.tabs(["📚 Appunti (Markdown)", "📄 Codice LaTeX"])
+            with tab_canvas_md:
+                canvas_scroll_area_md = st.container(height=520, border=False)
+                with canvas_scroll_area_md:
+                    if st.session_state.canvas_edit_mode_toggle:
+                        edited_text_canvas = st.text_area(
+                            "Modifica direttamente il testo nel Canvas:",
+                            value=st.session_state.appunti_generati,
+                            height=500,
+                            key="markdown_editor_area_canvas",
+                            on_change=update_appunti_from_editor
+                        )
+                        st.session_state.appunti_generati = edited_text_canvas
+                    else:
+                        canvas_placeholder = st.empty()
+                        canvas_placeholder.markdown(cleaned_render_canvas)
+
+            with tab_canvas_lat:
+                canvas_scroll_area_lat = st.container(height=520, border=False)
+                with canvas_scroll_area_lat:
+                    if st.session_state.canvas_edit_mode_toggle:
+                        edited_latex_canvas = st.text_area(
+                            "Modifica direttamente il codice LaTeX nel Canvas:",
+                            value=st.session_state.latex_generato if st.session_state.latex_generato else "",
+                            height=500,
+                            key="latex_editor_area_canvas"
+                        )
+                        st.session_state.latex_generato = edited_latex_canvas
+                    else:
+                        st.code(st.session_state.latex_generato, language="latex")
+                        st.divider()
+                        c_lat1, c_lat2 = st.columns([1, 4])
+                        with c_lat1:
+                            st.download_button("💾 Scarica .tex", st.session_state.latex_generato, f"appunti_{datetime.date.today().strftime('%d_%m_%Y')}.tex")
+                        with c_lat2:
+                            st_copy_to_clipboard(st.session_state.latex_generato, "📋 Copia LaTeX")
+        else:
+            canvas_scroll_area = st.container(height=580, border=False)
+            with canvas_scroll_area:
+                if st.session_state.canvas_edit_mode_toggle:
+                    edited_text_canvas = st.text_area(
+                        "Modifica direttamente il testo nel Canvas:",
+                        value=st.session_state.appunti_generati,
+                        height=580,
+                        key="markdown_editor_area_canvas",
+                        on_change=update_appunti_from_editor
+                    )
+                    st.session_state.appunti_generati = edited_text_canvas
+                else:
+                    canvas_placeholder = st.empty()
+                    canvas_placeholder.markdown(cleaned_render_canvas)
 
     # 2. SEPARATORE CENTRALE CON DRAG HANDLE TRASCINABILE (#drag-handle-pill-native)
     with col_handle:
@@ -710,7 +822,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         st.markdown("<h3 style='margin:0 0 0.8rem 0; color:#ffffff;'>💬 Chatbot Assistant</h3>", unsafe_allow_html=True)
         
         # Contenitore di scroll nativo per la chat senza bordi visibili
-        chat_scroll_area = st.container(height=640, border=False)
+        chat_scroll_area = st.container(height=570, border=False)
         with chat_scroll_area:
             st.markdown("<div style='height: 16px; width: 100%;'></div>", unsafe_allow_html=True)
             for msg in st.session_state.canvas_chat_history:
@@ -788,8 +900,19 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         const pDoc = window.parent.document;
         let userIsNearBottom = true;
 
+        function getTopLevelCols() {
+            const handle = pDoc.getElementById('drag-handle-pill-native');
+            if (!handle) return [];
+            const handleCol = handle.closest('[data-testid="stColumn"]');
+            if (!handleCol) return [];
+            const studioBlock = handleCol.parentElement;
+            if (!studioBlock) return [];
+            return Array.from(studioBlock.children).filter(el => el.getAttribute('data-testid') === 'stColumn');
+        }
+
         function getChatBox() {
-            const chatCol = pDoc.querySelector('div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1)');
+            const cols = getTopLevelCols();
+            const chatCol = cols[0];
             if (!chatCol) return null;
             return chatCol.querySelector('[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]') ||
                    chatCol.querySelector('div[data-testid="stElementContainer"]') ||
@@ -821,7 +944,8 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         }
 
         function initChatMutationObserver() {
-            const chatCol = pDoc.querySelector('div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1)');
+            const cols = getTopLevelCols();
+            const chatCol = cols[0];
             if (!chatCol || chatCol.getAttribute('data-scroll-observer') === 'true') return;
             
             chatCol.setAttribute('data-scroll-observer', 'true');
@@ -842,7 +966,8 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         }
 
         function syncChatInputPos() {
-            const leftCol = pDoc.querySelector('div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1)');
+            const cols = getTopLevelCols();
+            const leftCol = cols[0];
             const chatInput = pDoc.querySelector('div[data-testid="stChatInput"]');
             if (leftCol && chatInput) {
                 const rect = leftCol.getBoundingClientRect();
@@ -869,7 +994,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             const studioBlock = handleCol.parentElement;
             if (!studioBlock) return;
             
-            const cols = studioBlock.querySelectorAll('[data-testid="stColumn"]');
+            const cols = Array.from(studioBlock.children).filter(el => el.getAttribute('data-testid') === 'stColumn');
             if (cols.length < 3) return;
             
             const leftCol = cols[0];
@@ -1276,18 +1401,8 @@ else:
                                     st.session_state.show_canvas_chat = True
                                     st.rerun()
                             with btn_c2:
-                                if st.button("📄 Rigenera LaTeX", use_container_width=True, key="btn_regen_latex_standard"):
-                                    if st.session_state.get("appunti_generati"):
-                                        with st.spinner("📄 Rigenerazione codice LaTeX in corso..."):
-                                            success_lat, latex_res = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
-                                            if success_lat:
-                                                st.session_state.latex_generato = latex_res
-                                                st.toast("📄 Codice LaTeX rigenerato con successo!", icon="✅")
-                                                st.rerun()
-                                            else:
-                                                st.error(f"Errore generazione LaTeX: {latex_res}")
-                                    else:
-                                        st.warning("Nessun appunto presente per generare il LaTeX.")
+                                if st.button("📄 Rigenera LaTeX", use_container_width=True, key="btn_regen_latex_standard", disabled=is_latex_regen_active()):
+                                    trigger_background_latex_regen(selected_model)
                             with btn_c3:
                                 render_notion_save_button_tab()
 
@@ -1317,7 +1432,27 @@ else:
                             st_copy_to_clipboard(st.session_state.appunti_generati, "📋 Copia Markdown")
 
                     elif "LaTeX" in tab_name:
-                        st.code(st.session_state.latex_generato, language="latex")
+                        latex_view_mode = st.radio(
+                            "Modalità visualizzazione:",
+                            ["👁️ Anteprima Codice", "✏️ Modifica LaTeX"],
+                            horizontal=True,
+                            key="standard_latex_view_radio"
+                        )
+                        st.divider()
+
+                        if latex_view_mode == "✏️ Modifica LaTeX":
+                            edited_latex_homepage = st.text_area(
+                                "Modifica liberamente il codice LaTeX dell'intera pagina:",
+                                value=st.session_state.latex_generato if st.session_state.latex_generato else "",
+                                height=550,
+                                key="latex_editor_area_homepage"
+                            )
+                            st.session_state.latex_generato = edited_latex_homepage
+                        else:
+                            if "latex_editor_area_homepage" in st.session_state and st.session_state.latex_editor_area_homepage:
+                                st.session_state.latex_generato = st.session_state.latex_editor_area_homepage
+                            st.code(st.session_state.latex_generato, language="latex")
+
                         st.divider()
                         c3, c4 = st.columns([1, 4])
                         with c3:
