@@ -252,34 +252,9 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
                 gap: 0.1rem !important;
             }
 
-            /* COMPATTAZIONE VERTICALE TOTALE PER IL CANVAS (Nessuno spazio vuoto tra header e appunti) */
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div,
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) [data-testid="stVerticalBlock"],
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) [data-testid="stVerticalBlockGroup"] {
-                gap: 0 !important;
-                justify-content: flex-start !important;
-                align-items: stretch !important;
-            }
-
+            /* RESET PULITO PER IL CANVAS - Spaziatura naturale per il rendering Markdown */
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) [data-testid="stElementContainer"] {
-                margin-top: 0 !important;
-                margin-bottom: 0.1rem !important;
-                padding-top: 0 !important;
-                padding-bottom: 0 !important;
-            }
-
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) .stMarkdown {
-                margin-top: 0 !important;
-                padding-top: 0 !important;
-            }
-
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) .stMarkdown > div > *:first-child,
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) .stMarkdown h1:first-child,
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) .stMarkdown h2:first-child,
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) .stMarkdown h3:first-child,
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) .stMarkdown p:first-child {
-                margin-top: 0.1rem !important;
-                padding-top: 0 !important;
+                margin-bottom: 0.5rem !important;
             }
 
             /* 1. PANNELLO CHAT (Sinistra) - HEADER FISSO IN ALTO */
@@ -419,29 +394,121 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
             }
 
             /* SCRITTE BIANCO PURO (#FFFFFF) 100% LEGGIBILI OVUNQUE */
-            p, li, span, label, td, th, strong, em, div {
+            p, li, span, label, td, th, strong, em {
                 color: #ffffff !important;
                 opacity: 1 !important;
                 -webkit-text-fill-color: #ffffff !important;
                 font-size: 15px !important;
-                line-height: 1.6 !important;
+                line-height: 1.65 !important;
             }
 
-            /* TITOLI IN BIANCO BRILLANTE (#FFFFFF) */
-            h1, h2, h3, h4 {
+            /* TUTTI I TAG INTERNI AI TITOLI EREDITANO LA LORO GRANDEZZA IMPONENTE */
+            h1 *, h2 *, h3 *, h4 *,
+            .stMarkdown h1 *, .stMarkdown h2 *, .stMarkdown h3 *, .stMarkdown h4 *,
+            [data-testid="stMarkdownContainer"] h1 *, [data-testid="stMarkdownContainer"] h2 *, [data-testid="stMarkdownContainer"] h3 *, [data-testid="stMarkdownContainer"] h4 * {
+                font-size: inherit !important;
+                font-weight: inherit !important;
+                line-height: inherit !important;
+            }
+
+            /* GERARCHIA TIPOGRAFICA CON TITOLI GRANDI E IMPONENTI FEDELI AL MARKDOWN */
+            h1, .stMarkdown h1, [data-testid="stMarkdownContainer"] h1 {
+                font-size: 2.6rem !important; /* 42px - H1 Titolo Principale Molto Grande */
+                font-weight: 800 !important;
+                line-height: 1.2 !important;
+                color: #ffffff !important;
+                -webkit-text-fill-color: #ffffff !important;
+                margin-top: 1.8rem !important;
+                margin-bottom: 0.8rem !important;
+                border-bottom: 2px solid #383838 !important;
+                padding-bottom: 0.5rem !important;
+            }
+
+            h2, .stMarkdown h2, [data-testid="stMarkdownContainer"] h2 {
+                font-size: 2.0rem !important; /* 32px - H2 Sottotitolo Grande */
+                font-weight: 700 !important;
+                line-height: 1.25 !important;
+                color: #ffffff !important;
+                -webkit-text-fill-color: #ffffff !important;
+                margin-top: 1.5rem !important;
+                margin-bottom: 0.6rem !important;
+                border-bottom: 1px solid #2b2b2b !important;
+                padding-bottom: 0.4rem !important;
+            }
+
+            h3, .stMarkdown h3, [data-testid="stMarkdownContainer"] h3 {
+                font-size: 1.5rem !important; /* 24px - H3 Sezione Media */
+                font-weight: 600 !important;
+                line-height: 1.3 !important;
+                color: #ffffff !important;
+                -webkit-text-fill-color: #ffffff !important;
+                margin-top: 1.2rem !important;
+                margin-bottom: 0.5rem !important;
+            }
+
+            h4, .stMarkdown h4, [data-testid="stMarkdownContainer"] h4 {
+                font-size: 1.25rem !important; /* 20px - H4 Sottosezione */
+                font-weight: 600 !important;
+                line-height: 1.35 !important;
+                color: #e2e8f0 !important;
+                -webkit-text-fill-color: #e2e8f0 !important;
+                margin-top: 1.0rem !important;
+                margin-bottom: 0.4rem !important;
+            }
+
+            /* BLOCCHI DI CITAZIONE MARKDOWN */
+            blockquote, .stMarkdown blockquote {
+                border-left: 4px solid #60a5fa !important;
+                padding-left: 1rem !important;
+                color: #cbd5e1 !important;
+                font-style: italic !important;
+                background: rgba(255, 255, 255, 0.04) !important;
+                border-radius: 0 8px 8px 0 !important;
+                margin: 0.9rem 0 !important;
+            }
+
+            /* LISTE MARKDOWN (UL / OL / LI) CON SPAZIATURA E INDENTAZIONE PULITA */
+            .stMarkdown ul, .stMarkdown ol {
+                margin-left: 1.4rem !important;
+                margin-bottom: 0.9rem !important;
+                padding-left: 0.4rem !important;
+            }
+            .stMarkdown li {
+                font-size: 15px !important;
+                line-height: 1.65 !important;
+                color: #f1f5f9 !important;
+                margin-bottom: 0.35rem !important;
+            }
+
+            /* TABELLE MARKDOWN */
+            .stMarkdown table {
+                width: 100% !important;
+                border-collapse: collapse !important;
+                margin: 1.2rem 0 !important;
+                border: 1px solid #383838 !important;
+                border-radius: 8px !important;
+                overflow: hidden !important;
+            }
+            .stMarkdown th {
+                background-color: #262626 !important;
+                color: #ffffff !important;
+                font-weight: 700 !important;
+                padding: 10px 14px !important;
+                border: 1px solid #383838 !important;
+                text-align: left !important;
+            }
+            .stMarkdown td {
+                padding: 10px 14px !important;
+                border: 1px solid #383838 !important;
+                color: #e2e8f0 !important;
+                background-color: #1e1e1e !important;
+            }
+
+            /* FORMULE LATEX MATEMATICHE IN BIANCO NATURALE */
+            .katex, .katex *, .katex-display, .katex-display * {
                 color: #ffffff !important;
                 opacity: 1 !important;
                 -webkit-text-fill-color: #ffffff !important;
-                font-weight: 700 !important;
-                margin-top: 0.3rem !important;
-                margin-bottom: 0.3rem !important;
-            }
-
-            /* Formule LaTeX e Blocchi Codice su Grigio Dark */
-            .katex, .katex * {
-                color: #38bdf8 !important;
-                opacity: 1 !important;
-                -webkit-text-fill-color: #38bdf8 !important;
             }
             pre, code {
                 background-color: #2b2b2b !important;
