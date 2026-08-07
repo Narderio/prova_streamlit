@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import os
 import time
 import datetime
@@ -47,7 +46,7 @@ def st_copy_to_clipboard(text, label="📋 Copia"):
     }});
     </script>
     """
-    components.html(copy_js, height=50)
+    st.iframe(copy_js, height=50)
 
 # --- CALLBACK PER SINCRONIZZARE L'EDITOR CON LO STATO ---
 def update_appunti_from_editor():
@@ -119,6 +118,10 @@ if 'pending_agent_stream' not in st.session_state:
     st.session_state.pending_agent_stream = False
 if 'notion_save_thread' not in st.session_state:
     st.session_state.notion_save_thread = None
+if 'saved_vimeo_url' not in st.session_state:
+    st.session_state.saved_vimeo_url = ""
+if 'saved_lesson_date' not in st.session_state:
+    st.session_state.saved_lesson_date = datetime.date.today()
 
 # --- FUNZIONE DI VERIFICA LOCK NOTION ---
 def is_notion_saving_active():
@@ -132,6 +135,21 @@ def is_notion_saving_active():
             st.toast("✅ Pagina aggiornata su Notion con successo!", icon="🎉")
             return False
     return False
+
+def sync_latex_reprocess_checkboxes():
+    already_proc = st.session_state.get("already_processed", False)
+    has_reprocess = st.session_state.get("chk_force_reprocess", False)
+    is_new_proc = (not already_proc) or has_reprocess
+
+    has_latex = st.session_state.get("chk_do_latex", False)
+    has_markdown = st.session_state.get("chk_do_markdown_notion", False)
+
+    if is_new_proc:
+        if has_latex:
+            st.session_state.chk_do_markdown_notion = True
+            st.session_state.chk_do_transcript = True
+        elif has_markdown:
+            st.session_state.chk_do_transcript = True
 
 # --- FUNZIONE DI SALVATAGGIO SU NOTION CON LOCK E SNAPSHOT ---
 def save_current_notes_to_notion():
@@ -198,7 +216,7 @@ if 'canvas_width_pct' not in st.session_state:
 # ==============================================================================
 # PAGINA DEDICATA: CANVAS STUDIO FULL-SCREEN (SE ATTIVA)
 # ==============================================================================
-if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
+if st.session_state.get("show_canvas_chat", False) and st.session_state.get("appunti_generati") is not None:
     # 100% GUARANTEED SCROLLING CHATGPT CANVAS: Blocco Finestra Globale + 2 Slider Verticali Interni
     st.markdown("""
         <style>
@@ -609,9 +627,9 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
         with col_title:
             st.markdown("<h3 style='margin:0; padding:0; color:#ffffff;'>📄 Canvas Appunti</h3>", unsafe_allow_html=True)
         with col_btns:
-            btn_group_left, btn_back_col = st.columns([2, 1])
+            btn_group_left, btn_back_col = st.columns([3, 1])
             with btn_group_left:
-                b1, b2 = st.columns([1, 1])
+                b1, b2, b3 = st.columns([1, 1, 1])
                 with b1:
                     if 'canvas_edit_mode_toggle' not in st.session_state:
                         st.session_state.canvas_edit_mode_toggle = False
@@ -623,6 +641,19 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
                         st.session_state.canvas_edit_mode_toggle = not st.session_state.canvas_edit_mode_toggle
                         st.rerun()
                 with b2:
+                    if st.button("📄", help="Rigenera il codice LaTeX dagli appunti del Canvas", key="btn_regen_latex_canvas"):
+                        if st.session_state.get("appunti_generati"):
+                            with st.spinner("📄 Rigenerazione codice LaTeX in corso..."):
+                                success_lat, latex_res = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
+                                if success_lat:
+                                    st.session_state.latex_generato = latex_res
+                                    st.toast("📄 Codice LaTeX rigenerato con successo!", icon="✅")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Errore generazione LaTeX: {latex_res}")
+                        else:
+                            st.warning("Nessun appunto presente nel Canvas per generare il LaTeX.")
+                with b3:
                     if st.button("📤", help="Salva subito gli appunti su Notion", key="btn_save_notion_icon"):
                         save_current_notes_to_notion()
             with btn_back_col:
@@ -698,7 +729,7 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
                     try:
                         last_user_prompt = st.session_state.canvas_chat_history[-1]["content"]
                         stream_gen = agent_edit_notes_stream(
-                            current_markdown=st.session_state.appunti_generati,
+                            current_markdown=st.session_state.appunti_generati or "",
                             user_instruction=last_user_prompt,
                             chat_history=st.session_state.canvas_chat_history[:-1],
                             raw_transcript=st.session_state.testo_estratto,
@@ -737,6 +768,9 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
                         st.rerun()
                     except Exception as e:
                         st.session_state.pending_agent_stream = False
+                        st.error(f"❌ Errore durante la risposta dell'Assistente: {str(e)}")
+                        st.session_state.canvas_chat_history.append({"role": "assistant", "content": f"⚠️ Si è verificato un errore durante l'elaborazione: {str(e)}"})
+                        st.rerun()
             # Spaziatore inferiore di 180px per dare ampio spazio in fondo all'ultimo messaggio
             st.markdown("<div id='chat-bottom-spacer' style='height: 180px; width: 100%;'></div>", unsafe_allow_html=True)
 
@@ -924,7 +958,7 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
     })();
     </script>
     """
-    components.html(draggable_handle_js, height=0)
+    st.iframe(draggable_handle_js, height=1)
 
 # ==============================================================================
 # PAGINA PRINCIPALE: CONFIGURAZIONE FORM & GENERAZIONE
@@ -938,8 +972,23 @@ else:
     notion_token = os.getenv("NOTION_API_KEY")
     notion_corsi_id = os.getenv("NOTION_CORSI_PAGE_ID")
 
+    def update_saved_vimeo_url():
+        if "vimeo_url_input" in st.session_state:
+            st.session_state.saved_vimeo_url = st.session_state.vimeo_url_input
+
+    def update_saved_lesson_date():
+        if "lesson_date_input" in st.session_state:
+            st.session_state.saved_lesson_date = st.session_state.lesson_date_input
+
     with col_left:
-        url = st.text_input("Link video Vimeo", placeholder="https://vimeo.com/123456789/hash...")
+        url = st.text_input(
+            "Link video Vimeo",
+            value=st.session_state.saved_vimeo_url,
+            placeholder="https://vimeo.com/123456789/hash...",
+            key="vimeo_url_input",
+            on_change=update_saved_vimeo_url
+        )
+        st.session_state.saved_vimeo_url = url
 
         courses_dict = cached_get_available_courses(notion_corsi_id, notion_token)
         if courses_dict:
@@ -955,20 +1004,66 @@ else:
         st.session_state.selected_course_page_id = selected_course_page_id
 
     with col_right:
-        lesson_date = st.date_input("Data della lezione", value=datetime.date.today())
+        lesson_date = st.date_input(
+            "Data della lezione",
+            value=st.session_state.saved_lesson_date,
+            key="lesson_date_input",
+            on_change=update_saved_lesson_date
+        )
+        st.session_state.saved_lesson_date = lesson_date
         formatted_date_str = lesson_date.strftime("%d/%m/%Y")
         st.caption(f"Etichetta Lezione: **Lezione {formatted_date_str}**")
         st.session_state.formatted_date_str = formatted_date_str
+
+    video_id_preview, _ = extract_vimeo_ids(url) if url else (None, None)
+    already_processed = False
+    saved_page_id = None
+    existing_notion_url = None
+
+    if video_id_preview:
+        is_proc, record = cached_is_video_processed(video_id_preview)
+        if is_proc:
+            already_processed = True
+            saved_page_id = record.get("notion_page_id")
+            if saved_page_id:
+                st.session_state.current_notion_page_id = saved_page_id
+                clean_pid = notion_helper.format_notion_id(saved_page_id).replace("-", "")
+                existing_notion_url = f"https://www.notion.so/{clean_pid}"
+            elif selected_course_page_id:
+                clean_pid = notion_helper.format_notion_id(selected_course_page_id).replace("-", "")
+                existing_notion_url = f"https://www.notion.so/{clean_pid}"
+
+    st.session_state.already_processed = already_processed
+
+    if 'chk_do_transcript' not in st.session_state:
+        st.session_state.chk_do_transcript = True
+    if 'chk_do_markdown_notion' not in st.session_state:
+        st.session_state.chk_do_markdown_notion = True
+    if 'chk_do_latex' not in st.session_state:
+        st.session_state.chk_do_latex = False
+
+    is_reprocess = st.session_state.get("chk_force_reprocess", False)
+    is_new_processing = (not already_processed) or is_reprocess
+    is_latex = st.session_state.get("chk_do_latex", False)
+    is_markdown = st.session_state.get("chk_do_markdown_notion", False)
+
+    is_markdown_disabled = is_new_processing and is_latex
+    is_transcript_disabled = is_new_processing and (is_latex or is_markdown)
+
+    if is_markdown_disabled:
+        st.session_state.chk_do_markdown_notion = True
+    if is_transcript_disabled:
+        st.session_state.chk_do_transcript = True
 
     st.markdown("### 🎯 Seleziona cosa vuoi generare:")
     col_out1, col_out2, col_out3 = st.columns(3)
 
     with col_out1:
-        do_transcript = st.checkbox("📝 Trascrizione Grezza", value=True, help="Estrai il testo originale dal video Vimeo")
+        do_transcript = st.checkbox("📝 Trascrizione Grezza", key="chk_do_transcript", disabled=is_transcript_disabled, help="Estrai il testo originale dal video Vimeo")
     with col_out2:
-        do_markdown_notion = st.checkbox("📚 Appunti Markdown & Export Notion", value=True, help="Genera appunti formattati con Gemini e salvali su Notion")
+        do_markdown_notion = st.checkbox("📚 Appunti Markdown & Export Notion", key="chk_do_markdown_notion", on_change=sync_latex_reprocess_checkboxes, disabled=is_markdown_disabled, help="Genera appunti formattati con Gemini e salvali su Notion")
     with col_out3:
-        do_latex = st.checkbox("📄 Codice LaTeX", value=False, help="Converti gli appunti Markdown in codice LaTeX per la stampa")
+        do_latex = st.checkbox("📄 Codice LaTeX", key="chk_do_latex", on_change=sync_latex_reprocess_checkboxes, help="Converti gli appunti Markdown in codice LaTeX per la stampa")
 
     if do_markdown_notion or do_latex:
         with st.expander("🧠 Configurazione Prompt Gemini", expanded=False):
@@ -1012,49 +1107,38 @@ else:
                         else:
                             st.warning("Inserisci sia un titolo che un testo per il prompt.")
 
-    video_id_preview, _ = extract_vimeo_ids(url) if url else (None, None)
-    already_processed = False
     force_reprocess = False
+    if already_processed:
+        col_warn_msg, col_warn_btn = st.columns([3, 1])
+        with col_warn_msg:
+            st.warning(f"⚠️ **Attenzione:** Questa lezione (Video ID: `{video_id_preview}`) risulta già elaborata il **{record.get('created_at', '')[:10]}** per il corso **{record.get('course')}**.")
+        with col_warn_btn:
+            if existing_notion_url:
+                st.write("")
+                st.link_button("📖 Apri su Notion", existing_notion_url, use_container_width=True)
 
-    if video_id_preview:
-        is_proc, record = cached_is_video_processed(video_id_preview)
-        if is_proc:
-            already_processed = True
-            saved_page_id = record.get("notion_page_id")
-            if saved_page_id:
-                st.session_state.current_notion_page_id = saved_page_id
-                clean_pid = notion_helper.format_notion_id(saved_page_id).replace("-", "")
-                existing_notion_url = f"https://www.notion.so/{clean_pid}"
-            elif selected_course_page_id:
-                clean_pid = notion_helper.format_notion_id(selected_course_page_id).replace("-", "")
-                existing_notion_url = f"https://www.notion.so/{clean_pid}"
-            else:
-                existing_notion_url = None
+        force_reprocess = st.checkbox(
+            "🔄 Elabora ed esporta comunque (creando una nuova versione)",
+            value=False,
+            key="chk_force_reprocess",
+            on_change=sync_latex_reprocess_checkboxes
+        )
 
-            col_warn_msg, col_warn_btn = st.columns([3, 1])
-            with col_warn_msg:
-                st.warning(f"⚠️ **Attenzione:** Questa lezione (Video ID: `{video_id_preview}`) risulta già elaborata il **{record.get('created_at', '')[:10]}** per il corso **{record.get('course')}**.")
-            with col_warn_btn:
-                if existing_notion_url:
-                    st.write("")
-                    st.link_button("📖 Apri su Notion", existing_notion_url, use_container_width=True)
-
-            force_reprocess = st.checkbox("🔄 Elabora ed esporta comunque (creando una nuova versione)", value=False)
-
-            if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
-                fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
-                if fetched_notes:
-                    st.session_state.appunti_generati = fetched_notes
-                    st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
-                    st.session_state.notion_page_url = existing_notion_url
+        if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
+            fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
+            if fetched_notes:
+                st.session_state.appunti_generati = fetched_notes
+                st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
+                st.session_state.notion_page_url = existing_notion_url
 
     st.session_state.already_processed = already_processed
     st.divider()
 
-    can_start = url and (do_transcript or do_markdown_notion or do_latex) and (not already_processed or force_reprocess)
+    is_latex_only_existing = already_processed and not force_reprocess and do_latex
+    can_start = url and (do_transcript or do_markdown_notion or do_latex) and (not already_processed or force_reprocess or is_latex_only_existing)
 
     if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start or is_notion_saving_active()):
-        if already_processed and not force_reprocess:
+        if already_processed and not force_reprocess and not do_latex:
             st.error("⛔ Elaborazione bloccata: questa lezione è già stata inserita nel database. Spunta 'Elabora ed esporta comunque' se vuoi rielaborarla.")
             st.stop()
 
@@ -1063,75 +1147,95 @@ else:
         elif do_markdown_notion and not selected_course_page_id:
             st.error("⚠️ Specifica l'ID della pagina Notion 'Corsi' nel file .env (NOTION_CORSI_PAGE_ID).")
         else:
-            st.session_state.testo_estratto = None
-            st.session_state.appunti_generati = None
-            st.session_state.latex_generato = None
-            st.session_state.notion_status = None
-            st.session_state.notion_page_url = None
-            st.session_state.canvas_chat_history = []
+            if force_reprocess or not already_processed:
+                st.session_state.testo_estratto = None
+                st.session_state.appunti_generati = None
+                st.session_state.latex_generato = None
+                st.session_state.notion_status = None
+                st.session_state.notion_page_url = None
+                st.session_state.canvas_chat_history = []
 
             with st.status("🚀 Avvio elaborazione...", expanded=True) as status:
-                if do_transcript:
-                    status.update(label="📝 Estrazione trascrizione da Vimeo in corso...")
-                    res_tr = download_and_process(url)
-                    if res_tr.get("success"):
-                        st.session_state.testo_estratto = res_tr.get("text")
-                        st.write("✅ Trascrizione estratta con successo!")
+                if already_processed and not force_reprocess and do_latex:
+                    status.update(label="📄 Caricamento appunti esistenti da Notion e conversione in LaTeX...")
+                    if saved_page_id and not st.session_state.appunti_generati:
+                        fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
+                        if fetched_notes:
+                            st.session_state.appunti_generati = fetched_notes
+
+                    if st.session_state.appunti_generati:
+                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
+                        if success_lat:
+                            st.session_state.latex_generato = latex_gen
+                            st.write("✅ Codice LaTeX generato con successo dagli appunti di Notion!")
+                        else:
+                            st.error(f"Errore durante la generazione LaTeX: {latex_gen}")
                     else:
-                        st.error(f"Errore trascrizione: {res_tr.get('error')}")
-                        status.update(label="❌ Errore durante la trascrizione", state="error")
-                        st.stop()
+                        st.error("Impossibile recuperare gli appunti da Notion per generare il codice LaTeX.")
+                else:
+                    if do_transcript:
+                        status.update(label="📝 Estrazione trascrizione da Vimeo in corso...")
+                        success_tr, text_tr, _ = download_and_process(url)
+                        if success_tr:
+                            st.session_state.testo_estratto = text_tr
+                            st.write("✅ Trascrizione estratta con successo!")
+                        else:
+                            st.error(f"Errore trascrizione: {text_tr}")
+                            status.update(label="❌ Errore durante la trascrizione", state="error")
+                            st.stop()
 
-                if do_markdown_notion and st.session_state.testo_estratto:
-                    status.update(label="🧠 Generazione appunti formattati con Gemini in corso...")
-                    res_gen = generate_notes(st.session_state.testo_estratto, custom_prompt=final_prompt, model_name=selected_model)
-                    if res_gen.get("success"):
-                        st.session_state.appunti_generati = res_gen.get("markdown")
-                        st.write("✅ Appunti Markdown generati con successo!")
-                    else:
-                        st.error(f"Errore Gemini: {res_gen.get('error')}")
-                        status.update(label="❌ Errore durante la generazione appunti", state="error")
-                        st.stop()
+                    if do_markdown_notion and st.session_state.testo_estratto:
+                        status.update(label="🧠 Generazione appunti formattati con Gemini in corso...")
+                        success_gen, notes_gen = generate_notes(st.session_state.testo_estratto, custom_prompt=final_prompt, model_name=selected_model)
+                        if success_gen:
+                            st.session_state.appunti_generati = notes_gen
+                            st.write("✅ Appunti Markdown generati con successo!")
+                        else:
+                            st.error(f"Errore Gemini: {notes_gen}")
+                            status.update(label="❌ Errore durante la generazione appunti", state="error")
+                            st.stop()
 
-                if do_latex and st.session_state.appunti_generati:
-                    status.update(label="📄 Conversione appunti in codice LaTeX in corso...")
-                    res_lat = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
-                    if res_lat.get("success"):
-                        st.session_state.latex_generato = res_lat.get("latex")
-                        st.write("✅ Codice LaTeX generato con successo!")
+                    if do_latex and st.session_state.appunti_generati:
+                        status.update(label="📄 Conversione appunti in codice LaTeX in corso...")
+                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
+                        if success_lat:
+                            st.session_state.latex_generato = latex_gen
+                            st.write("✅ Codice LaTeX generato con successo!")
+                        else:
+                            st.error(f"Errore LaTeX: {latex_gen}")
 
-                if do_markdown_notion and st.session_state.appunti_generati and notion_token and selected_course_page_id:
-                    status.update(label="📤 Creazione riga ed esportazione appunti su Notion...")
-                    v_id, _ = extract_vimeo_ids(url)
-                    success_notion, notion_page_id, msg_notion = export_to_notion(
-                        course_name=selected_course,
-                        lesson_date_str=formatted_date_str,
-                        markdown_text=st.session_state.appunti_generati,
-                        corsi_page_id=selected_course_page_id,
-                        is_same_video=already_processed,
-                        api_key=notion_token
-                    )
+                    if do_markdown_notion and st.session_state.appunti_generati and notion_token and selected_course_page_id:
+                        status.update(label="📤 Creazione riga ed esportazione appunti su Notion...")
+                        v_id, _ = extract_vimeo_ids(url)
+                        success_notion, msg_notion, notion_page_id = export_to_notion(
+                            course_name=selected_course,
+                            course_page_id=selected_course_page_id,
+                            lesson_date_str=formatted_date_str,
+                            markdown_text=st.session_state.appunti_generati,
+                            is_same_video=already_processed,
+                            api_key=notion_token
+                        )
 
-                    if not success_notion:
-                        st.warning(f"⚠️ Avviso Notion: {msg_notion}")
-                        st.session_state.notion_status = f"Errore Notion: {msg_notion}"
-                    else:
-                        st.session_state.current_notion_page_id = notion_page_id
-                        st.session_state.notion_status = f"✅ {msg_notion}"
-                        st.write(f"✅ {msg_notion}")
+                        if not success_notion:
+                            st.warning(f"⚠️ Avviso Notion: {msg_notion}")
+                            st.session_state.notion_status = f"Errore Notion: {msg_notion}"
+                        else:
+                            st.session_state.current_notion_page_id = notion_page_id
+                            st.session_state.notion_status = f"✅ {msg_notion}"
+                            st.write(f"✅ {msg_notion}")
 
-                        if notion_page_id:
-                            clean_pid = notion_helper.format_notion_id(notion_page_id).replace("-", "")
-                            st.session_state.notion_page_url = f"https://www.notion.so/{clean_pid}"
+                            if notion_page_id:
+                                clean_pid = notion_helper.format_notion_id(notion_page_id).replace("-", "")
+                                st.session_state.notion_page_url = f"https://www.notion.so/{clean_pid}"
 
-                        if v_id:
-                            supabase_client.save_processed_lesson(
-                                video_id=v_id,
-                                url=url,
-                                course=selected_course,
-                                lesson_date=formatted_date_str,
-                                notion_page_id=notion_page_id
-                            )
+                            if v_id:
+                                supabase_client.save_processed_lesson(
+                                    video_id=v_id,
+                                    url=url,
+                                    course=selected_course,
+                                    lesson_date=formatted_date_str,
+                                    notion_page_id=notion_page_id
+                                )
 
                 status.update(label="🎉 Elaborazione completata!", state="complete", expanded=False)
 
@@ -1166,12 +1270,25 @@ else:
                             view_mode = st.radio("Modalità visualizzazione:", ["👁️ Anteprima Formattata", "✏️ Modifica Markdown"], horizontal=True, key="standard_view_radio")
                         with sub_col2:
                             st.write("")
-                            btn_c1, btn_c2 = st.columns([1, 1])
+                            btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 1])
                             with btn_c1:
-                                if st.button("🎨 Apri Studio Canvas (Split-Screen)", type="primary", use_container_width=True, key="btn_open_canvas_chat"):
+                                if st.button("🎨 Studio Canvas", type="primary", use_container_width=True, key="btn_open_canvas_chat"):
                                     st.session_state.show_canvas_chat = True
                                     st.rerun()
                             with btn_c2:
+                                if st.button("📄 Rigenera LaTeX", use_container_width=True, key="btn_regen_latex_standard"):
+                                    if st.session_state.get("appunti_generati"):
+                                        with st.spinner("📄 Rigenerazione codice LaTeX in corso..."):
+                                            success_lat, latex_res = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
+                                            if success_lat:
+                                                st.session_state.latex_generato = latex_res
+                                                st.toast("📄 Codice LaTeX rigenerato con successo!", icon="✅")
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Errore generazione LaTeX: {latex_res}")
+                                    else:
+                                        st.warning("Nessun appunto presente per generare il LaTeX.")
+                            with btn_c3:
                                 render_notion_save_button_tab()
 
                         st.divider()
