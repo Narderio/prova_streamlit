@@ -602,117 +602,9 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
     if is_saving:
         st.caption("⏳ **Sincronizzazione Notion in corso in background...** Puoi continuare a modificare gli appunti o chattare!")
 
-    # 1. LA CHAT È LA PAGINA (PANNELLO DI SINISTRA - FLUSSO SCORREVOLE NATIVO SENZA BORDI)
-    with col_chat:
-        st.markdown("<h3 style='margin:0 0 0.8rem 0; color:#ffffff;'>💬 Chatbot Assistant</h3>", unsafe_allow_html=True)
-        
-        # Contenitore di scroll nativo per la chat senza bordi visibili
-        chat_scroll_area = st.container(height=640, border=False)
-        with chat_scroll_area:
-            st.markdown("<div style='height: 16px; width: 100%;'></div>", unsafe_allow_html=True)
-            for msg in st.session_state.canvas_chat_history:
-                with st.chat_message(msg["role"]):
-                    if msg["role"] == "user":
-                        st.markdown("<div style='color: #60a5fa; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; text-align: right;'>👤 UTENTE</div>", unsafe_allow_html=True)
-                    else:
-                        st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
-                    st.markdown(msg["content"])
-
-            if st.session_state.pending_agent_stream:
-                with st.chat_message("assistant"):
-                    st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
-                    components.html("""
-                    <script>
-                    (function() {
-                        const pDoc = window.parent.document;
-                        const chatCol = pDoc.querySelector('div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1)');
-                        if (chatCol) {
-                            const chatBox = chatCol.querySelector('[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]') ||
-                                            chatCol.querySelector('div[data-testid="stElementContainer"]') || chatCol;
-                            if (chatBox) chatBox.scrollTop = chatBox.scrollHeight;
-                            const spacer = pDoc.getElementById('chat-bottom-spacer');
-                            if (spacer) spacer.scrollIntoView({ behavior: 'instant', block: 'end' });
-                        }
-                    })();
-                    </script>
-                    """, height=0)
-                    chat_response_placeholder = st.empty()
-                    full_raw_response = ""
-                    try:
-                        last_user_prompt = st.session_state.canvas_chat_history[-1]["content"]
-                        stream_gen = agent_edit_notes_stream(
-                            current_markdown=st.session_state.appunti_generati,
-                            user_instruction=last_user_prompt,
-                            chat_history=st.session_state.canvas_chat_history[:-1],
-                            raw_transcript=st.session_state.testo_estratto,
-                            model_name=selected_model
-                        )
-                        for chunk_text in stream_gen:
-                            full_raw_response += chunk_text
-                            if "<<<UPDATED_CANVAS>>>" in full_raw_response:
-                                parts = full_raw_response.split("<<<UPDATED_CANVAS>>>")
-                                chat_part = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
-                                canvas_part = parts[1].strip()
-                                chat_response_placeholder.markdown(chat_part)
-                                if canvas_part.upper() != "NO_CHANGE":
-                                    st.session_state.appunti_generati = notion_helper.clean_markdown_for_streamlit(canvas_part)
-                            else:
-                                chat_part = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip()
-                                chat_response_placeholder.markdown(chat_part)
-                        
-                        if "<<<CHAT_RESPONSE>>>" in full_raw_response and "<<<UPDATED_CANVAS>>>" in full_raw_response:
-                            parts = full_raw_response.split("<<<UPDATED_CANVAS>>>")
-                            final_chat_reply = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
-                            raw_canvas = parts[1].strip()
-                            if raw_canvas.upper() != "NO_CHANGE" and len(raw_canvas) > 5:
-                                st.session_state.appunti_generati = notion_helper.clean_markdown_for_streamlit(raw_canvas)
-                                st.toast("⚡ Canvas aggiornato in tempo reale!", icon="✅")
-                            else:
-                                st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
-                        else:
-                            final_chat_reply = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip() or "Risposta dell'assistente."
-                            st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
-                        
-                        st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply})
-                        st.session_state.pending_agent_stream = False
-                        st.rerun()
-                    except Exception as e:
-                        st.session_state.pending_agent_stream = False
-            # Spaziatore inferiore di 180px per dare ampio spazio in fondo all'ultimo messaggio
-            st.markdown("<div id='chat-bottom-spacer' style='height: 180px; width: 100%;'></div>", unsafe_allow_html=True)
-
-        # Campo chat_input POSIZIONATO FISSO IN BASSO A SINISTRA
-        user_input = st.chat_input("Chiedi all'Assistente AI di modificare il Canvas...", disabled=st.session_state.pending_agent_stream)
-        if user_input and not st.session_state.pending_agent_stream:
-            st.session_state.canvas_chat_history.append({"role": "user", "content": user_input})
-            st.session_state.pending_agent_stream = True
-            st.rerun()
-
-    # 2. SEPARATORE CENTRALE CON DRAG HANDLE TRASCINABILE (#drag-handle-pill-native)
-    with col_handle:
-        st.markdown("""
-            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-height: 650px; user-select: none;">
-                <div id="drag-handle-pill-native" style="
-                    width: 18px;
-                    height: 64px;
-                    background-color: #2b2b2b;
-                    border: 1.5px solid #444444;
-                    border-radius: 12px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    cursor: col-resize;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-                    transition: background-color 0.2s, transform 0.15s;
-                " title="Trascina con il mouse per ridimensionare il Canvas">
-                    <span style="color: #888888; font-size: 13px; user-select: none; pointer-events: none;">⋮</span>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
-    # 3. PANNELLO CANVAS A DESTRA (DOCUMENTO)
+    # 1. PANNELLO CANVAS A DESTRA (DOCUMENTO MOSTRATO PRIMA PER PERMETTERE IL LIVE STREAMING)
+    canvas_placeholder = None
     with col_canvas:
-        # Header Toolbar del Canvas: Titolo + Pulsanti Azione
         col_title, col_btns = st.columns([6, 4])
         with col_title:
             st.markdown("<h3 style='margin:0; padding:0; color:#ffffff;'>📄 Canvas Appunti</h3>", unsafe_allow_html=True)
@@ -757,7 +649,103 @@ if st.session_state.show_canvas_chat and st.session_state.appunti_generati:
                 )
                 st.session_state.appunti_generati = edited_text_canvas
             else:
-                st.markdown(cleaned_render_canvas)
+                canvas_placeholder = st.empty()
+                canvas_placeholder.markdown(cleaned_render_canvas)
+
+    # 2. SEPARATORE CENTRALE CON DRAG HANDLE TRASCINABILE (#drag-handle-pill-native)
+    with col_handle:
+        st.markdown("""
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-height: 650px; user-select: none;">
+                <div id="drag-handle-pill-native" style="
+                    width: 18px;
+                    height: 64px;
+                    background-color: #2b2b2b;
+                    border: 1.5px solid #444444;
+                    border-radius: 12px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: col-resize;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+                    transition: background-color 0.2s, transform 0.15s;
+                " title="Trascina con il mouse per ridimensionare il Canvas">
+                    <span style="color: #888888; font-size: 13px; user-select: none; pointer-events: none;">⋮</span>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # 3. PANNELLO CHAT (SINISTRA) - STREAMING IN TEMPO REALE SUL CANVAS E SULLA CHAT
+    with col_chat:
+        st.markdown("<h3 style='margin:0 0 0.8rem 0; color:#ffffff;'>💬 Chatbot Assistant</h3>", unsafe_allow_html=True)
+        
+        # Contenitore di scroll nativo per la chat senza bordi visibili
+        chat_scroll_area = st.container(height=640, border=False)
+        with chat_scroll_area:
+            st.markdown("<div style='height: 16px; width: 100%;'></div>", unsafe_allow_html=True)
+            for msg in st.session_state.canvas_chat_history:
+                with st.chat_message(msg["role"]):
+                    if msg["role"] == "user":
+                        st.markdown("<div style='color: #60a5fa; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; text-align: right;'>👤 UTENTE</div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
+                    st.markdown(msg["content"])
+
+            if st.session_state.pending_agent_stream:
+                with st.chat_message("assistant"):
+                    st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
+                    chat_response_placeholder = st.empty()
+                    full_raw_response = ""
+                    try:
+                        last_user_prompt = st.session_state.canvas_chat_history[-1]["content"]
+                        stream_gen = agent_edit_notes_stream(
+                            current_markdown=st.session_state.appunti_generati,
+                            user_instruction=last_user_prompt,
+                            chat_history=st.session_state.canvas_chat_history[:-1],
+                            raw_transcript=st.session_state.testo_estratto,
+                            model_name=selected_model
+                        )
+                        for chunk_text in stream_gen:
+                            full_raw_response += chunk_text
+                            if "<<<UPDATED_CANVAS>>>" in full_raw_response:
+                                parts = full_raw_response.split("<<<UPDATED_CANVAS>>>")
+                                chat_part = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
+                                canvas_part = parts[1].strip()
+                                chat_response_placeholder.markdown(chat_part)
+                                if canvas_part.upper() != "NO_CHANGE" and canvas_placeholder is not None:
+                                    cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(canvas_part)
+                                    canvas_placeholder.markdown(cleaned_live_canvas)
+                                    st.session_state.appunti_generati = cleaned_live_canvas
+                            else:
+                                chat_part = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip()
+                                chat_response_placeholder.markdown(chat_part)
+                        
+                        if "<<<CHAT_RESPONSE>>>" in full_raw_response and "<<<UPDATED_CANVAS>>>" in full_raw_response:
+                            parts = full_raw_response.split("<<<UPDATED_CANVAS>>>")
+                            final_chat_reply = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
+                            raw_canvas = parts[1].strip()
+                            if raw_canvas.upper() != "NO_CHANGE" and len(raw_canvas) > 5:
+                                st.session_state.appunti_generati = notion_helper.clean_markdown_for_streamlit(raw_canvas)
+                                st.toast("⚡ Canvas aggiornato in tempo reale!", icon="✅")
+                            else:
+                                st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
+                        else:
+                            final_chat_reply = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip() or "Risposta dell'assistente."
+                            st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
+                        
+                        st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply})
+                        st.session_state.pending_agent_stream = False
+                        st.rerun()
+                    except Exception as e:
+                        st.session_state.pending_agent_stream = False
+            # Spaziatore inferiore di 180px per dare ampio spazio in fondo all'ultimo messaggio
+            st.markdown("<div id='chat-bottom-spacer' style='height: 180px; width: 100%;'></div>", unsafe_allow_html=True)
+
+        # Campo chat_input POSIZIONATO FISSO IN BASSO A SINISTRA
+        user_input = st.chat_input("Chiedi all'Assistente AI di modificare il Canvas...", disabled=st.session_state.pending_agent_stream)
+        if user_input and not st.session_state.pending_agent_stream:
+            st.session_state.canvas_chat_history.append({"role": "user", "content": user_input})
+            st.session_state.pending_agent_stream = True
+            st.rerun()
 
     # --- INIEZIONE JAVASCRIPT DRAGGABLE PER IL TASTO PILLOLA #drag-handle-pill-native ---
     draggable_handle_js = """
