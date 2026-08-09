@@ -7,6 +7,7 @@ from google import genai
 from dotenv import load_dotenv
 
 import notion_helper
+import gemini_rate_tracker
 
 load_dotenv()
 
@@ -215,6 +216,7 @@ def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None)
     prompt = custom_prompt if (custom_prompt and custom_prompt.strip()) else DEFAULT_PROMPT
     
     try:
+        gemini_rate_tracker.log_request()
         response = client.models.generate_content(
             model=model_name,
             contents=f"{prompt}\n\nTRASCRIZIONE:\n{text}"
@@ -235,6 +237,7 @@ def generate_latex(markdown_text, model_name="gemini-3.5-flash-lite"):
     client = genai.Client(api_key=api_key)
     
     try:
+        gemini_rate_tracker.log_request()
         response = client.models.generate_content(
             model=model_name,
             contents=f"{LATEX_PROMPT}\n\nCONTENUTO MARKDOWN:\n{markdown_text}"
@@ -265,7 +268,7 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
     blocks = notion_helper.markdown_to_notion_blocks(markdown_text)
 
     # 4. Inserisci i blocchi nella pagina Notion
-    success_app, err_app = notion_helper.append_notes_to_page(lesson_page_id, blocks, is_append=is_existing, api_key=api_key)
+    success_app, err_app = notion_helper.append_notes_to_page(ldoveesson_page_id, blocks, is_append=is_existing, api_key=api_key)
     if not success_app:
         return False, f"Errore scrittura blocchi su Notion: {err_app}", None
 
@@ -329,6 +332,7 @@ ISTRUZIONE DELL'UTENTE:
 {user_instruction}"""
 
     try:
+        gemini_rate_tracker.log_request()
         response = client.models.generate_content(
             model=model_name,
             contents=f"{CANVAS_AGENT_PROMPT}\n\n{user_payload}"
@@ -379,6 +383,7 @@ STORICO DIALOGO RECENTE:
 ISTRUZIONE DELL'UTENTE:
 {user_instruction}"""
 
+    gemini_rate_tracker.log_request()
     response_stream = client.models.generate_content_stream(
         model=model_name,
         contents=f"{CANVAS_AGENT_PROMPT}\n\n{user_payload}"

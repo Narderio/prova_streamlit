@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import backend
 import notion_helper
 import supabase_client
+import gemini_rate_tracker
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # Ricarica dinamica moduli per garantire che le modifiche al codice backend siano sempre applicate
@@ -175,6 +176,12 @@ else:
     user_api_key = st.sidebar.text_input("Google API Key", type="password", help="Inserisci la tua chiave API per Gemini")
     if user_api_key.strip():
         os.environ["GOOGLE_API_KEY"] = user_api_key.strip()
+
+rpm, rpd = gemini_rate_tracker.get_metrics()
+st.sidebar.caption("Statistiche API Gemini (Locali)")
+col1, col2 = st.sidebar.columns(2)
+col1.metric("RPM", rpm, help="Richieste nell'ultimo minuto")
+col2.metric("RPD", rpd, help="Richieste nelle ultime 24 ore")
 
 st.sidebar.divider()
 
