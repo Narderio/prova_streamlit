@@ -49,14 +49,101 @@ def st_copy_to_clipboard(text, label="📋 Copia"):
     """
     st.iframe(copy_js, height=50)
 
-# --- CALLBACK PER SINCRONIZZARE L'EDITOR CON LO STATO ---
+# --- CALLBACK E HELPER PER LA GESTIONE DELLE VERSIONI DEGLI APPUNTI ---
+def safe_set_session_state(key, val):
+    try:
+        st.session_state[key] = val
+    except Exception:
+        pass
+
+def safe_sync_version_tabs(new_ver_str):
+    for k in list(st.session_state.keys()):
+        if k.endswith("_ver_segmented_tab"):
+            safe_set_session_state(k, new_ver_str)
+
+def add_note_version(new_notes):
+    """Aggiunge una nuova versione degli appunti accodandola sempre alla fine."""
+    if 'notes_versions' not in st.session_state or not isinstance(st.session_state.notes_versions, list):
+        st.session_state.notes_versions = []
+    
+    st.session_state.notes_versions.append(new_notes)
+    new_idx = len(st.session_state.notes_versions) - 1
+    st.session_state.current_version_index = new_idx
+    st.session_state.appunti_generati = new_notes
+    st.session_state._last_valid_appunti = new_notes
+    safe_set_session_state("markdown_editor_area", new_notes)
+    safe_set_session_state("markdown_editor_area_canvas", new_notes)
+    st.session_state._version_just_switched = True
+
+    new_ver_str = str(new_idx + 1)
+    safe_sync_version_tabs(new_ver_str)
+
+def switch_note_version(target_index):
+    """Cambia la versione attiva degli appunti."""
+    if 'notes_versions' in st.session_state and 0 <= target_index < len(st.session_state.notes_versions):
+        st.session_state.current_version_index = target_index
+        selected_notes = st.session_state.notes_versions[target_index]
+        st.session_state.appunti_generati = selected_notes
+        st.session_state._last_valid_appunti = selected_notes
+        safe_set_session_state("markdown_editor_area", selected_notes)
+        safe_set_session_state("markdown_editor_area_canvas", selected_notes)
+        st.session_state._version_just_switched = True
+
+        new_ver_str = str(target_index + 1)
+        safe_sync_version_tabs(new_ver_str)
+
 def update_appunti_from_editor():
+    updated_val = None
     if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
-        st.session_state.appunti_generati = st.session_state.markdown_editor_area
-        st.session_state._last_valid_appunti = st.session_state.markdown_editor_area
+        updated_val = st.session_state.markdown_editor_area
     elif "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
-        st.session_state.appunti_generati = st.session_state.markdown_editor_area_canvas
-        st.session_state._last_valid_appunti = st.session_state.markdown_editor_area_canvas
+        updated_val = st.session_state.markdown_editor_area_canvas
+    
+    if updated_val:
+        st.session_state.appunti_generati = updated_val
+        st.session_state._last_valid_appunti = updated_val
+        if 'notes_versions' in st.session_state and st.session_state.notes_versions:
+            idx = st.session_state.get('current_version_index', 0)
+            if 0 <= idx < len(st.session_state.notes_versions):
+                st.session_state.notes_versions[idx] = updated_val
+
+def render_version_navigation_bar(key_prefix=""):
+    versions = st.session_state.get("notes_versions", [])
+    if (not versions or not isinstance(versions, list)) and st.session_state.get("appunti_generati"):
+        st.session_state.notes_versions = [st.session_state.appunti_generati]
+        st.session_state.current_version_index = 0
+        versions = st.session_state.notes_versions
+
+    if versions and len(versions) > 0:
+        current_idx = st.session_state.get("current_version_index", 0)
+        options = [str(i + 1) for i in range(len(versions))]
+        
+        if current_idx >= len(options):
+            current_idx = len(options) - 1
+            st.session_state.current_version_index = current_idx
+
+        widget_key = f"{key_prefix}_ver_segmented_tab"
+        target_str = options[current_idx]
+        
+        # Sincronizza la chiave del widget solo se non esiste, non è tra le opzioni o se c'è stato un cambio programmatico di versione
+        if widget_key not in st.session_state or st.session_state[widget_key] not in options or st.session_state.get("_version_just_switched", False):
+            safe_set_session_state(widget_key, target_str)
+            st.session_state._version_just_switched = False
+
+        selected_v = st.segmented_control(
+            "Versione",
+            options=options,
+            selection_mode="single",
+            required=True,
+            label_visibility="collapsed",
+            key=widget_key
+        )
+        
+        if selected_v and selected_v in options:
+            new_idx = int(selected_v) - 1
+            if new_idx < len(versions) and new_idx != st.session_state.get("current_version_index"):
+                switch_note_version(new_idx)
+                st.rerun()
 
 # --- FUNZIONI DI CACHING PER ELIMINARE RITARDI DI RETE AD OGNI RERUN ---
 @st.cache_data(ttl=600, show_spinner=False)
@@ -105,6 +192,10 @@ if 'testo_estratto' not in st.session_state:
     st.session_state.testo_estratto = None
 if 'appunti_generati' not in st.session_state:
     st.session_state.appunti_generati = None
+if 'notes_versions' not in st.session_state:
+    st.session_state.notes_versions = []
+if 'current_version_index' not in st.session_state:
+    st.session_state.current_version_index = 0
 if 'latex_generato' not in st.session_state:
     st.session_state.latex_generato = None
 if 'notion_status' not in st.session_state:
@@ -135,7 +226,7 @@ def is_notion_saving_active():
         else:
             st.session_state.notion_save_thread = None
             st.session_state.notion_status = "✅ Pagina aggiornata su Notion con successo!"
-            st.toast("✅ Pagina aggiornata su Notion con successo!", icon="🎉")
+            st.toast("✅ Appunti salvati su Notion con successo!", icon="🎉")
             return False
     return False
 
@@ -160,10 +251,12 @@ def is_latex_regen_active():
 def trigger_background_latex_regen(selected_model):
     if is_latex_regen_active():
         st.warning("⏳ Generazione LaTeX già in corso in background...")
+        st.toast("⏳ Generazione LaTeX già in corso in background...", icon="⚠️")
         return
     notes_snap = st.session_state.get("appunti_generati")
     if not notes_snap:
         st.warning("Nessun appunto presente per generare il LaTeX.")
+        st.toast("⚠️ Nessun appunto presente per generare il LaTeX.", icon="⚠️")
         return
     
     def _worker(notes, model):
@@ -202,6 +295,7 @@ def sync_latex_reprocess_checkboxes():
 def save_current_notes_to_notion():
     if is_notion_saving_active():
         st.warning("⏳ Un salvataggio su Notion è già in corso. Attendi che il salvataggio precedente sia completato.")
+        st.toast("⏳ Salvataggio su Notion già in corso...", icon="⚠️")
         return
 
     target_pid = st.session_state.get("current_notion_page_id")
@@ -234,10 +328,11 @@ def save_current_notes_to_notion():
         st.session_state.notion_status = "⚡ Salvataggio avviato su Notion con snapshot protetto!"
         st.session_state.canvas_view_radio = "👁️ Anteprima Formattata"
         st.session_state.standard_view_radio = "👁️ Anteprima Formattata"
-        st.toast("⚡ Salvataggio avviato su Notion! Passato ad Anteprima Formattata.", icon="🚀")
+        st.toast("📤 Salvataggio degli appunti su Notion avviato!", icon="🚀")
         st.rerun()
     else:
         st.error("Impossibile individuare la pagina Notion da aggiornare.")
+        st.toast("❌ Errore: Impossibile individuare la pagina Notion da aggiornare.", icon="⚠️")
 
 # --- COMPONENTI FRAGMENT PER IL PULSANTE NOTION ---
 @st.fragment(run_every="2s")
@@ -260,6 +355,23 @@ if 'canvas_ratio_mode' not in st.session_state:
     st.session_state.canvas_ratio_mode = "Canvas XXL"
 if 'canvas_width_pct' not in st.session_state:
     st.session_state.canvas_width_pct = 55
+
+# --- FRAGMENT NOTIFICA TOAST FLUTTUANTE CON BARRA DI CARICAMENTO ---
+@st.fragment(run_every="1s")
+def render_active_background_operations_banner():
+    is_notion_saving = is_notion_saving_active()
+    is_latex_regen = is_latex_regen_active()
+
+    if is_notion_saving or is_latex_regen:
+        cards_html = ""
+        if is_notion_saving:
+            cards_html += "<div class='floating-notification-card' style='border: 1px solid #3b82f6;'><div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'><span style='color: #60a5fa; font-weight: 600; font-size: 13px;'>📤 Esportazione su Notion in corso...</span><span style='color: #94a3b8; font-size: 11px; margin-left: 12px;'>Background</span></div><div style='width: 100%; background: #1e293b; border-radius: 4px; height: 6px; overflow: hidden;'><div class='custom-progress-bar' style='width: 100%; height: 100%; background-color: #3b82f6;'></div></div></div>"
+            
+        if is_latex_regen:
+            cards_html += "<div class='floating-notification-card' style='border: 1px solid #10b981;'><div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'><span style='color: #34d399; font-weight: 600; font-size: 13px;'>📄 Generazione LaTeX in corso...</span><span style='color: #94a3b8; font-size: 11px; margin-left: 12px;'>Gemini AI</span></div><div style='width: 100%; background: #1e293b; border-radius: 4px; height: 6px; overflow: hidden;'><div class='custom-progress-bar' style='width: 100%; height: 100%; background-color: #10b981;'></div></div></div>"
+
+        floating_html = f"<style>@keyframes slide-in-notification {{0% {{ transform: translateY(20px); opacity: 0; }} 100% {{ transform: translateY(0); opacity: 1; }} }} @keyframes progress-bar-stripes {{ 0% {{ background-position: 1rem 0; }} 100% {{ background-position: 0 0; }} }} .floating-notification-container {{ position: fixed !important; bottom: 25px !important; right: 25px !important; z-index: 999999999 !important; display: flex !important; flex-direction: column !important; gap: 10px !important; pointer-events: none !important; }} .floating-notification-card {{ pointer-events: auto !important; background: rgba(15, 23, 42, 0.96) !important; backdrop-filter: blur(10px) !important; border-radius: 10px !important; padding: 12px 16px !important; min-width: 310px !important; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7) !important; animation: slide-in-notification 0.3s ease-out !important; }} .custom-progress-bar {{ background-image: linear-gradient(45deg, rgba(255, 255, 255, .2) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .2) 50%, rgba(255, 255, 255, .2) 75%, transparent 75%, transparent) !important; background-size: 1rem 1rem !important; animation: progress-bar-stripes 1s linear infinite !important; }}</style><div class='floating-notification-container'>{cards_html}</div>"
+        st.markdown(floating_html, unsafe_allow_html=True)
 
 # --- FRAGMENT DI VERIFICA AUTOMATICA THREAD IN BACKGROUND ---
 @st.fragment(run_every="2s")
@@ -772,18 +884,23 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         if st.session_state.appunti_generati and len(str(st.session_state.appunti_generati).strip()) > 0:
             st.session_state._last_valid_appunti = st.session_state.appunti_generati
 
-        cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "").strip()
+        # NOTIFICA CONTINUA ANIMATA PER OPERAZIONI IN BACKGROUND (NOTION & LATEX)
+        render_active_background_operations_banner()
 
         if st.session_state.latex_generato:
             tab_canvas_md, tab_canvas_lat = st.tabs(["📚 Appunti (Markdown)", "📄 Codice LaTeX"])
             with tab_canvas_md:
-                canvas_scroll_area_md = st.container(height=600, border=False)
+                render_version_navigation_bar("canvas_tab_md")
+                st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
+                cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "").strip()
+
+                canvas_scroll_area_md = st.container(height=540, border=False)
                 with canvas_scroll_area_md:
                     if st.session_state.canvas_edit_mode_toggle:
                         edited_text_canvas = st.text_area(
                             "Modifica direttamente il testo nel Canvas:",
                             value=st.session_state.appunti_generati,
-                            height=580,
+                            height=520,
                             key="markdown_editor_area_canvas",
                             on_change=update_appunti_from_editor
                         )
@@ -793,13 +910,13 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         canvas_placeholder.markdown(cleaned_render_canvas)
 
             with tab_canvas_lat:
-                canvas_scroll_area_lat = st.container(height=600, border=False)
+                canvas_scroll_area_lat = st.container(height=580, border=False)
                 with canvas_scroll_area_lat:
                     if st.session_state.canvas_edit_mode_toggle:
                         edited_latex_canvas = st.text_area(
                             "Modifica direttamente il codice LaTeX nel Canvas:",
                             value=st.session_state.latex_generato if st.session_state.latex_generato else "",
-                            height=580,
+                            height=560,
                             key="latex_editor_area_canvas"
                         )
                         st.session_state.latex_generato = edited_latex_canvas
@@ -812,13 +929,17 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         with c_lat2:
                             st_copy_to_clipboard(st.session_state.latex_generato, "📋 Copia LaTeX")
         else:
-            canvas_scroll_area = st.container(height=660, border=False)
+            render_version_navigation_bar("canvas_no_tab_md")
+            st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
+            cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "").strip()
+
+            canvas_scroll_area = st.container(height=580, border=False)
             with canvas_scroll_area:
                 if st.session_state.canvas_edit_mode_toggle:
                     edited_text_canvas = st.text_area(
                         "Modifica direttamente il testo nel Canvas:",
                         value=st.session_state.appunti_generati,
-                        height=660,
+                        height=560,
                         key="markdown_editor_area_canvas",
                         on_change=update_appunti_from_editor
                     )
@@ -872,13 +993,20 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     full_raw_response = ""
                     try:
                         last_user_prompt = st.session_state.canvas_chat_history[-1]["content"]
+                        current_ctx_idx = st.session_state.get("current_version_index", 0)
+                        if st.session_state.get("stream_version_created", False) and current_ctx_idx > 0 and len(st.session_state.get("notes_versions", [])) >= current_ctx_idx:
+                            base_markdown = st.session_state.notes_versions[current_ctx_idx - 1]
+                        else:
+                            base_markdown = st.session_state.appunti_generati or ""
+
                         stream_gen = agent_edit_notes_stream(
-                            current_markdown=st.session_state.appunti_generati or "",
+                            current_markdown=base_markdown,
                             user_instruction=last_user_prompt,
                             chat_history=st.session_state.canvas_chat_history[:-1],
                             raw_transcript=st.session_state.testo_estratto,
                             model_name=selected_model
                         )
+
                         for chunk_text in stream_gen:
                             full_raw_response += chunk_text
                             if "<<<UPDATED_CANVAS>>>" in full_raw_response:
@@ -886,10 +1014,24 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                 chat_part = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
                                 canvas_part = parts[1].strip()
                                 chat_response_placeholder.markdown(chat_part)
-                                if canvas_part.upper() != "NO_CHANGE" and canvas_placeholder is not None:
+                                if canvas_part.upper() != "NO_CHANGE" and len(canvas_part) > 5:
                                     cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(canvas_part)
-                                    canvas_placeholder.markdown(cleaned_live_canvas)
-                                    st.session_state.appunti_generati = cleaned_live_canvas
+                                    if not st.session_state.get("stream_version_created", False):
+                                        add_note_version(cleaned_live_canvas)
+                                        st.session_state.stream_version_created = True
+                                        st.session_state.stream_target_version_index = st.session_state.current_version_index
+                                    else:
+                                        target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
+                                        if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
+                                            st.session_state.notes_versions[target_idx] = cleaned_live_canvas
+                                        
+                                        if st.session_state.get("current_version_index") == target_idx:
+                                            st.session_state.appunti_generati = cleaned_live_canvas
+                                            st.session_state._last_valid_appunti = cleaned_live_canvas
+                                            safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
+                                            safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
+                                            if canvas_placeholder is not None:
+                                                canvas_placeholder.markdown(cleaned_live_canvas)
                             else:
                                 chat_part = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip()
                                 chat_response_placeholder.markdown(chat_part)
@@ -899,19 +1041,34 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             final_chat_reply = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
                             raw_canvas = parts[1].strip()
                             if raw_canvas.upper() != "NO_CHANGE" and len(raw_canvas) > 5:
-                                st.session_state.appunti_generati = notion_helper.clean_markdown_for_streamlit(raw_canvas)
-                                st.toast("⚡ Canvas aggiornato in tempo reale!", icon="✅")
+                                cleaned_canvas = notion_helper.clean_markdown_for_streamlit(raw_canvas)
+                                target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
+                                if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
+                                    st.session_state.notes_versions[target_idx] = cleaned_canvas
+                                switch_note_version(target_idx)
+                                st.toast(f"⚡ Canvas aggiornato alla Versione {target_idx + 1}!", icon="✅")
                             else:
+                                if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
+                                    st.session_state.notes_versions.pop()
+                                    switch_note_version(len(st.session_state.notes_versions) - 1)
                                 st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
                         else:
+                            if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
+                                st.session_state.notes_versions.pop()
+                                switch_note_version(len(st.session_state.notes_versions) - 1)
                             final_chat_reply = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip() or "Risposta dell'assistente."
                             st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
                         
+                        st.session_state.stream_version_created = False
                         st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply})
                         st.session_state.pending_agent_stream = False
                         st.rerun()
                     except Exception as e:
+                        if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
+                            st.session_state.notes_versions.pop()
+                            switch_note_version(len(st.session_state.notes_versions) - 1)
                         st.session_state.pending_agent_stream = False
+                        st.session_state.stream_version_created = False
                         st.error(f"❌ Errore durante la risposta dell'Assistente: {str(e)}")
                         st.session_state.canvas_chat_history.append({"role": "assistant", "content": f"⚠️ Si è verificato un errore durante l'elaborazione: {str(e)}"})
                         st.rerun()
@@ -923,6 +1080,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         if user_input and not st.session_state.pending_agent_stream:
             st.session_state.canvas_chat_history.append({"role": "user", "content": user_input})
             st.session_state.pending_agent_stream = True
+            st.session_state.stream_version_created = False
             st.rerun()
 
     # --- INIEZIONE JAVASCRIPT DRAGGABLE PER IL TASTO PILLOLA #drag-handle-pill-native ---
@@ -1284,7 +1442,7 @@ else:
         if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
             fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
             if fetched_notes:
-                st.session_state.appunti_generati = fetched_notes
+                add_note_version(fetched_notes)
                 st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
                 st.session_state.notion_page_url = existing_notion_url
 
@@ -1307,6 +1465,8 @@ else:
             if force_reprocess or not already_processed:
                 st.session_state.testo_estratto = None
                 st.session_state.appunti_generati = None
+                st.session_state.notes_versions = []
+                st.session_state.current_version_index = 0
                 st.session_state.latex_generato = None
                 st.session_state.notion_status = None
                 st.session_state.notion_page_url = None
@@ -1318,7 +1478,7 @@ else:
                     if saved_page_id and not st.session_state.appunti_generati:
                         fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
                         if fetched_notes:
-                            st.session_state.appunti_generati = fetched_notes
+                            add_note_version(fetched_notes)
 
                     if st.session_state.appunti_generati:
                         success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
@@ -1345,7 +1505,7 @@ else:
                         status.update(label="🧠 Generazione appunti formattati con Gemini in corso...")
                         success_gen, notes_gen = generate_notes(st.session_state.testo_estratto, custom_prompt=final_prompt, model_name=selected_model)
                         if success_gen:
-                            st.session_state.appunti_generati = notes_gen
+                            add_note_version(notes_gen)
                             st.write("✅ Appunti Markdown generati con successo!")
                         else:
                             st.error(f"Errore Gemini: {notes_gen}")
@@ -1398,6 +1558,7 @@ else:
 
     if st.session_state.testo_estratto or st.session_state.appunti_generati:
         st.write("")
+        render_active_background_operations_banner()
         is_saving = is_notion_saving_active()
 
         if st.session_state.notion_status:
@@ -1422,10 +1583,13 @@ else:
             for i, tab_name in enumerate(tabs_to_show):
                 with tabs[i]:
                     if "Appunti" in tab_name:
-                        sub_col1, sub_col2 = st.columns([2, 2])
+                        sub_col1, sub_col2, sub_col3 = st.columns([2, 1.5, 2.5])
                         with sub_col1:
                             view_mode = st.radio("Modalità visualizzazione:", ["👁️ Anteprima Formattata", "✏️ Modifica Markdown"], horizontal=True, key="standard_view_radio")
                         with sub_col2:
+                            st.write("")
+                            render_version_navigation_bar("main_tab")
+                        with sub_col3:
                             st.write("")
                             btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 1])
                             with btn_c1:
@@ -1450,8 +1614,6 @@ else:
                             )
                             st.session_state.appunti_generati = edited_text
                         else:
-                            if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
-                                st.session_state.appunti_generati = st.session_state.markdown_editor_area
                             cleaned_render = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati)
                             st.markdown(cleaned_render)
 
