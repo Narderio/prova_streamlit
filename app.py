@@ -407,8 +407,8 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 padding: 0 !important;
                 margin: 0 !important;
             }
-            /* NASCONDE COMPLETAMENTE GLI IFRAME DI INIEZIONE JS (NO LINEE, NO FRECCE, 0PX) */
-            iframe[data-testid="stIframe"], div[data-testid="stIframe"] {
+            /* NASCONDE COMPLETAMENTE GLI IFRAME DI INIEZIONE JS (NO LINEE, NO FRECCE, 0PX) E I PULSANTI FULLSCREEN */
+            iframe[data-testid="stIframe"], div[data-testid="stIframe"], div[data-testid="stHtml"], button[title="View fullscreen"], [data-testid="stElementToolbar"] {
                 display: none !important;
                 height: 0px !important;
                 min-height: 0px !important;
@@ -417,6 +417,24 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 margin: 0 !important;
                 padding: 0 !important;
             }
+            div[data-testid="stElementContainer"]:has(iframe[height="1"]), div[data-testid="stElementContainer"]:has(iframe[height="0"]) {
+                display: none !important;
+                height: 0px !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+
+            /* POSIZIONA LA CHAT NATIVA ESATTAMENTE SOTTO LA CHAT CUSTOM COSI DA ESSERE SOVRAPPOSTA E INVISIBILE */
+            div[data-testid="stChatInput"], div[data-testid="stChatInputContainer"], [data-testid="stBottom"] {
+                position: fixed !important;
+                bottom: 15px !important;
+                left: 15px !important;
+                opacity: 0 !important;
+                z-index: 0 !important;
+                pointer-events: none !important;
+                transform: scale(0.01) !important;
+            }
+
             .main, .stMain, [data-testid="stMain"], .block-container, [data-testid="stBlockContainer"],
             div[data-testid="stAppViewContainer"] > section.main {
                 padding-top: 0px !important;
@@ -478,15 +496,14 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 margin-bottom: 0.5rem !important;
             }
 
-            /* 1. PANNELLO CHAT (Sinistra) - ALTEZZA REGOLATA PER VISIBILITÀ */
+            /* IMPOSTAZIONI PER LA COLONNA DESTRA E SINISTRA (SCROLL) */
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) {
                 height: calc(100vh - 35px) !important;
                 max-height: calc(100vh - 35px) !important;
-                overflow: hidden !important;
+                overflow-x: hidden !important;
+                overflow-y: auto !important;
+                padding-bottom: 80px !important; /* Spazio per la barra custom */
                 padding-right: 0.5rem !important;
-                display: flex !important;
-                flex-direction: column !important;
-                justify-content: flex-start !important;
             }
 
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) [data-testid="stVerticalBlock"] {
@@ -500,13 +517,13 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) {
                 background-color: #1a1a1a !important;
                 border-radius: 16px !important;
-                padding: 0.8rem 1.2rem !important;
+                padding: 0.8rem 1.2rem 2rem 1.2rem !important;
                 border: 1px solid #333333 !important;
                 box-shadow: 0 4px 25px rgba(0,0,0,0.5) !important;
                 height: calc(100vh - 35px) !important;
                 max-height: calc(100vh - 35px) !important;
                 overflow-x: hidden !important;
-                overflow-y: hidden !important;
+                overflow-y: auto !important;
                 display: flex !important;
                 flex-direction: column !important;
                 justify-content: flex-start !important;
@@ -904,7 +921,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
                 cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "").strip()
 
-                canvas_scroll_area_md = st.container(height=540, border=False)
+                canvas_scroll_area_md = st.container(border=False)
                 with canvas_scroll_area_md:
                     if st.session_state.canvas_edit_mode_toggle:
                         edited_text_canvas = st.text_area(
@@ -920,7 +937,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         canvas_placeholder.markdown(cleaned_render_canvas)
 
             with tab_canvas_lat:
-                canvas_scroll_area_lat = st.container(height=580, border=False)
+                canvas_scroll_area_lat = st.container(border=False)
                 with canvas_scroll_area_lat:
                     if st.session_state.canvas_edit_mode_toggle:
                         edited_latex_canvas = st.text_area(
@@ -943,7 +960,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
             cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "").strip()
 
-            canvas_scroll_area = st.container(height=580, border=False)
+            canvas_scroll_area = st.container(border=False)
             with canvas_scroll_area:
                 if st.session_state.canvas_edit_mode_toggle:
                     edited_text_canvas = st.text_area(
@@ -1181,7 +1198,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         st.markdown(f'<div id="streaming-state-flag" data-streaming="{_streaming_flag_val}" style="display:none !important;"></div>', unsafe_allow_html=True)
 
         # Contenitore di scroll nativo per la chat senza bordi visibili
-        chat_scroll_area = st.container(height=650, border=False)
+        chat_scroll_area = st.container(border=False)
         with chat_scroll_area:
             st.markdown("<div style='height: 16px; width: 100%;'></div>", unsafe_allow_html=True)
             for msg in st.session_state.canvas_chat_history:
@@ -1745,6 +1762,24 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 # PAGINA PRINCIPALE: CONFIGURAZIONE FORM & GENERAZIONE
 # ==============================================================================
 else:
+    # --- CLEANUP: Rimuove la chatbar personalizzata se l'utente torna alla home ---
+    cleanup_js = """
+    <script>
+    (function() {
+        const pDoc = window.parent.document;
+        const bar = pDoc.getElementById('custom-chatgpt-bar');
+        if (bar) {
+            bar.remove();
+        }
+    })();
+    </script>
+    """
+    import streamlit.components.v1 as components
+    try:
+        st.iframe(cleanup_js, height=1)
+    except AttributeError:
+        components.html(cleanup_js, height=1)
+
     st.title("🎓 Da Vimeo ad Appunti & Notion")
     st.markdown("Estrai la trascrizione dai video Vimeo, genera ed edita appunti universitari con Gemini e salvali direttamente su **Notion**.")
 
