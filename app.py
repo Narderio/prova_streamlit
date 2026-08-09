@@ -504,6 +504,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 overflow-y: auto !important;
                 padding-bottom: 80px !important; /* Spazio per la barra custom */
                 padding-right: 0.5rem !important;
+                display: flex !important;
+                flex-direction: column !important;
+                justify-content: flex-start !important;
             }
 
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(1) [data-testid="stVerticalBlock"] {
