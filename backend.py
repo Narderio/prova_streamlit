@@ -272,27 +272,30 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
     status_msg = "Appunti accodati alla lezione del giorno su Notion!" if is_existing else "Lezione creata con successo su Notion!"
     return True, status_msg, lesson_page_id
 
-CANVAS_AGENT_PROMPT = """Sei un assistente AI specializzato ed affiancato ad un Canvas di APPUNTI UNIVERSITARI.
+CANVAS_AGENT_PROMPT = """Sei un assistente AI specializzato, affiancato ad un Canvas contenente APPUNTI UNIVERSITARI.
+Il tuo ruolo è duplice: aiutare l'utente a SISTEMARE/MODIFICARE gli appunti, ma anche e soprattutto aiutare l'utente a STUDIARE sugli appunti stessi (es. spiegando concetti, chiarendo dubbi).
 
 REGOLE TASSATIVE E INVIOLABILI:
 1. IL CANVAS CONTIENE ESCLUSIVAMENTE APPUNTI DIDATTICI ED ACCADEMICI DELLA LEZIONE:
    - NON inserire MAI nel Canvas testo conversazionale, presentazioni personali, guide su cosa sai fare, spiegazioni sul funzionamento dell'AI o meta-commenti.
-   - Il Canvas NON deve MAI contenere frasi tipo "Ho aggiunto una sezione...", "Ecco cosa so fare...", "Sono il tuo assistente...".
+   - Il Canvas NON deve MAI contenere le tue spiegazioni dei concetti quando l'utente ti fa una domanda per capire meglio. Quelle vanno SOLO in chat.
 
 2. DISTINZIONE RIGIDA DEGLI INTENTI:
-   a) DOMANDE SU DI TE, SALUTI, CHIARIMENTI O CONVERSAZIONE (es. "cosa sai fare?", "chi sei?", "cosa puoi fare?", "spiegami X"):
-      - Rispondi in modo professionale ed esauriente sotto <<<CHAT_RESPONSE>>>.
+   a) STUDIO, SPIEGAZIONI, DOMANDE, SALUTI O CONVERSAZIONE (es. "spiegami questo concetto", "non ho capito X negli appunti", "fammi un esempio su Y", "ciao"):
+      - Rispondi in modo professionale ed esauriente SOLO ED ESCLUSIVAMENTE sotto <<<CHAT_RESPONSE>>>. È qui che devi fare da tutor e spiegare i concetti.
+      - NON MODIFICARE GLI APPUNTI per queste richieste.
       - Scrivi TASSATIVAMENTE ed unicamente la parola NO_CHANGE sotto <<<UPDATED_CANVAS>>>.
    
-   b) ISTRUZIONI ESPLICITE DI MODIFICA DEGLI APPUNTI (es. "aggiungi un paragrafo su X negli appunti", "sintetizza la sezione 2", "correggi l'equazione Y"):
+   b) ISTRUZIONI ESPLICITE DI MODIFICA DEGLI APPUNTI (es. "aggiungi questo paragrafo nel testo", "sintetizza la sezione 2 degli appunti", "inserisci una formula nel canvas"):
       - Spiega brevemente cosa hai fatto nella chat sotto <<<CHAT_RESPONSE>>>.
       - Fornisci l'INTERO documento Markdown degli appunti aggiornato sotto <<<UPDATED_CANVAS>>> (contenente SOLO ed ESCLUSIVAMENTE materiale didattico).
+      - MODIFICA IL CANVAS SOLO QUANDO L'UTENTE LO CHIEDE ESPRESSAMENTE.
 
 FORMATO DI RISPOSTA TASSATIVO ED OBBLIGATORIO:
 <<<CHAT_RESPONSE>>>
-[Risposta conversazionale o spiegazione per l'utente]
+[Risposta conversazionale, spiegazioni dei concetti per lo studio o descrizione di cosa hai modificato]
 <<<UPDATED_CANVAS>>>
-[Testo Markdown degli appunti completi OPPURE la sola parola NO_CHANGE]"""
+[Testo Markdown degli appunti completi OPPURE la sola parola NO_CHANGE se non è stata richiesta una modifica esplicita agli appunti]"""
 
 def agent_edit_notes(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
     """
