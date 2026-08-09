@@ -1004,14 +1004,236 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
     with col_chat:
         st.markdown("<h3 style='margin:0 0 0.8rem 0; color:#ffffff;'>💬 Chatbot Assistant</h3>", unsafe_allow_html=True)
 
-        # --- INIEZIONE JAVASCRIPT DRAGGABLE PER IL TASTO PILLOLA #drag-handle-pill-native ---
-        draggable_handle_js = """
+        # --- INIEZIONE BARRA CHAT PERSONALIZZATA STILE CHATGPT E GESTIONE PILLOLA #drag-handle-pill-native ---
+        is_streaming_js = "true" if st.session_state.pending_agent_stream else "false"
+        model_badge_text = f"✨ {selected_model.replace('gemini-', 'Gemini ').replace('-', ' ').title()}"
+        draggable_handle_js = f"""
         <script>
-        (function() {
+        (function() {{
             const pDoc = window.parent.document;
+            const pWin = pDoc.defaultView || window.parent;
             let userIsNearBottom = true;
 
-            function getTopLevelCols() {
+            // FLAG STREAMING SUL PARENT WINDOW (condiviso tra tutti gli iframe)
+            pWin.__isAgentStreaming = {is_streaming_js};
+
+            function readStreamingFlagFromDOM() {{
+                const flagEl = pDoc.getElementById('streaming-state-flag');
+                if (flagEl) {{
+                    const domSaysStreaming = (flagEl.getAttribute('data-streaming') === 'true');
+                    if (domSaysStreaming) {{
+                        pWin.__isAgentStreaming = true;
+                    }} else {{
+                        pWin.__isAgentStreaming = false;
+                    }}
+                }}
+            }}
+
+            function hideNativeChatInput() {{
+                const nativeInput = pDoc.querySelector('div[data-testid="stChatInput"]');
+                if (nativeInput && nativeInput.getAttribute('data-custom-hidden') !== 'true') {{
+                    nativeInput.setAttribute('data-custom-hidden', 'true');
+                    nativeInput.style.cssText = 'position:fixed !important; bottom:0 !important; left:0 !important; width:1px !important; height:1px !important; opacity:0 !important; overflow:hidden !important; z-index:-1 !important; clip:rect(0,0,0,0) !important;';
+                }}
+            }}
+
+            function ensureCustomChatGPTBar() {{
+                let bar = pDoc.getElementById('custom-chatgpt-bar');
+                if (!bar) {{
+                    bar = pDoc.createElement('div');
+                    bar.id = 'custom-chatgpt-bar';
+                    bar.innerHTML = `
+                        <style>
+                            #custom-chatgpt-bar {{
+                                position: fixed;
+                                bottom: 15px;
+                                background: #2f2f2f;
+                                border: 1px solid #424242;
+                                border-radius: 20px;
+                                padding: 8px 12px 8px 16px;
+                                box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+                                z-index: 99999;
+                                display: flex;
+                                flex-direction: row;
+                                align-items: flex-end;
+                                gap: 12px;
+                                box-sizing: border-box;
+                                transition: border-color 0.2s, box-shadow 0.2s;
+                            }}
+                            #custom-chatgpt-bar:focus-within {{
+                                border-color: #555555;
+                                box-shadow: 0 8px 28px rgba(0,0,0,0.7);
+                            }}
+                            #custom-chatgpt-textarea {{
+                                flex-grow: 1;
+                                background: transparent;
+                                border: none;
+                                outline: none;
+                                color: #ececec;
+                                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                                font-size: 14px;
+                                line-height: 1.45;
+                                resize: none;
+                                max-height: 120px;
+                                min-height: 24px;
+                                padding: 5px 0;
+                                box-sizing: border-box;
+                            }}
+                            #custom-chatgpt-textarea::placeholder {{
+                                color: #8e8e8e;
+                            }}
+                            .chatgpt-send-btn {{
+                                width: 32px;
+                                height: 32px;
+                                min-width: 32px;
+                                border-radius: 50%;
+                                border: none;
+                                background: #424242;
+                                color: #8e8e8e;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                cursor: not-allowed;
+                                transition: background-color 0.2s, transform 0.1s, color 0.2s;
+                                margin-bottom: 2px;
+                            }}
+                            .chatgpt-send-btn.active {{
+                                background: #ffffff !important;
+                                color: #000000 !important;
+                                cursor: pointer !important;
+                            }}
+                            .chatgpt-send-btn.active:hover {{
+                                transform: scale(1.06);
+                            }}
+                            .chatgpt-send-btn.streaming {{
+                                background: #38bdf8 !important;
+                                color: #ffffff !important;
+                                cursor: not-allowed !important;
+                                animation: pulse-stream 1.5s infinite;
+                            }}
+                            @keyframes pulse-stream {{
+                                0% {{ opacity: 0.6; }}
+                                50% {{ opacity: 1; }}
+                                100% {{ opacity: 0.6; }}
+                            }}
+                        </style>
+                        <textarea id="custom-chatgpt-textarea" placeholder="Chiedi all'Assistente AI di modificare il Canvas..." rows="1"></textarea>
+                        <button id="custom-chatgpt-send-btn" class="chatgpt-send-btn" title="Invia messaggio">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="19" x2="12" y2="5"></line>
+                                <polyline points="5 12 12 5 19 12"></polyline>
+                            </svg>
+                        </button>
+                    `;
+                    pDoc.body.appendChild(bar);
+                }}
+
+                const textarea = pDoc.getElementById('custom-chatgpt-textarea');
+                const sendBtn = pDoc.getElementById('custom-chatgpt-send-btn');
+
+                function updateSendBtnState() {{
+                    if (!textarea || !sendBtn) return;
+                    const val = textarea.value.trim();
+                    if (pWin.__isAgentStreaming) {{
+                        sendBtn.className = 'chatgpt-send-btn streaming';
+                        sendBtn.title = "Assistente al lavoro...";
+                    }} else if (val.length > 0) {{
+                        sendBtn.className = 'chatgpt-send-btn active';
+                        sendBtn.title = "Invia messaggio";
+                    }} else {{
+                        sendBtn.className = 'chatgpt-send-btn';
+                        sendBtn.title = "Scrivi un messaggio...";
+                    }}
+                }}
+
+                function autoResizeTextarea() {{
+                    if (!textarea) return;
+                    textarea.style.height = 'auto';
+                    textarea.style.height = Math.min(120, textarea.scrollHeight) + 'px';
+                    updateSendBtnState();
+                }}
+
+                function submitCustomMessage() {{
+                    if (pWin.__isAgentStreaming) return;
+                    if (!textarea) return;
+                    const val = textarea.value.trim();
+                    if (!val) return;
+
+                    const nativeInputContainer = pDoc.querySelector('div[data-testid="stChatInput"]');
+                    if (nativeInputContainer) {{
+                        nativeInputContainer.style.cssText = 'position:fixed; bottom:0; left:0; width:1px; height:1px; opacity:0; overflow:hidden; z-index:-1;';
+                        nativeInputContainer.removeAttribute('data-custom-hidden');
+                    }}
+                    const nativeTextarea = nativeInputContainer ? nativeInputContainer.querySelector('textarea') : null;
+                    const nativeButton = nativeInputContainer ? (nativeInputContainer.querySelector('button[data-testid="stChatInputSubmitButton"]') || nativeInputContainer.querySelector('button')) : null;
+
+                    if (nativeTextarea && nativeButton) {{
+                        const nativeSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, "value").set;
+                        nativeSetter.call(nativeTextarea, val);
+                        nativeTextarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        nativeTextarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        
+                        textarea.value = '';
+                        autoResizeTextarea();
+
+                        nativeTextarea.dispatchEvent(new KeyboardEvent('keydown', {{
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13,
+                            bubbles: true,
+                            cancelable: true
+                        }}));
+
+                        setTimeout(function() {{
+                            nativeButton.disabled = false;
+                            nativeButton.removeAttribute('disabled');
+                            nativeButton.click();
+                            
+                            // Forza lo scroll subito dopo l'invio
+                            autoScrollChatToBottom(true);
+                            
+                            setTimeout(function() {{
+                                const ta = pDoc.getElementById('custom-chatgpt-textarea');
+                                if (ta) ta.focus();
+                            }}, 50);
+                        }}, 150);
+                    }}
+                }}
+
+                if (textarea) {{
+                    textarea.oninput = function(e) {{
+                        e.stopPropagation();
+                        textarea.style.height = 'auto';
+                        textarea.style.height = Math.min(120, textarea.scrollHeight) + 'px';
+                        updateSendBtnState();
+                    }};
+                    textarea.onkeydown = function(e) {{
+                        e.stopPropagation();
+                        if (e.key === 'Enter' && !e.shiftKey) {{
+                            e.preventDefault();
+                            if (!pWin.__isAgentStreaming) {{
+                                submitCustomMessage();
+                            }}
+                        }}
+                    }};
+                    textarea.onkeypress = function(e) {{ e.stopPropagation(); }};
+                    textarea.onkeyup = function(e) {{ e.stopPropagation(); }};
+                }}
+
+                if (sendBtn) {{
+                    sendBtn.onclick = function(e) {{
+                        e.preventDefault();
+                        if (!pWin.__isAgentStreaming) {{
+                            submitCustomMessage();
+                        }}
+                    }};
+                }}
+
+                updateSendBtnState();
+            }}
+
+            function getTopLevelCols() {{
                 const handle = pDoc.getElementById('drag-handle-pill-native');
                 if (!handle) return [];
                 const handleCol = handle.closest('[data-testid="stColumn"]');
@@ -1019,85 +1241,85 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 const studioBlock = handleCol.parentElement;
                 if (!studioBlock) return [];
                 return Array.from(studioBlock.children).filter(el => el.getAttribute('data-testid') === 'stColumn');
-            }
+            }}
 
-            function getChatBox() {
+            function syncChatInputPos() {{
+                hideNativeChatInput();
+                ensureCustomChatGPTBar();
+                const cols = getTopLevelCols();
+                const leftCol = cols[0];
+                const bar = pDoc.getElementById('custom-chatgpt-bar');
+                if (leftCol && bar) {{
+                    const rect = leftCol.getBoundingClientRect();
+                    bar.style.left = (rect.left + 8) + 'px';
+                    bar.style.width = Math.max(200, rect.width - 20) + 'px';
+                }}
+            }}
+
+            function getChatBox() {{
                 const cols = getTopLevelCols();
                 const chatCol = cols[0];
-                if (!chatCol) return null;
-                return chatCol.querySelector('[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]') ||
-                       chatCol.querySelector('div[data-testid="stElementContainer"]') ||
-                       chatCol;
-            }
+                return chatCol; // Ritorna l'intera colonna che ha overflow-y: auto
+            }}
 
-            function autoScrollChatToBottom(force) {
+            function autoScrollChatToBottom(force) {{
                 const chatBox = getChatBox();
                 if (!chatBox) return;
 
-                if (force || userIsNearBottom) {
-                    chatBox.scrollTop = chatBox.scrollHeight;
-                    const spacer = pDoc.getElementById('chat-bottom-spacer');
-                    if (spacer) {
-                        spacer.scrollIntoView({ behavior: 'instant', block: 'end' });
-                    }
-                }
-            }
+                if (force || userIsNearBottom) {{
+                    // Ritardo per permettere al browser di aggiornare l'altezza del DOM
+                    setTimeout(function() {{
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                        const spacer = pDoc.getElementById('chat-bottom-spacer');
+                        if (spacer) {{
+                            spacer.scrollIntoView({{ behavior: 'instant', block: 'end' }});
+                        }}
+                    }}, 50);
+                }}
+            }}
 
-            function setupScrollListener() {
+            function setupScrollListener() {{
                 const chatBox = getChatBox();
-                if (!chatBox || chatBox.getAttribute('data-scroll-listener') === 'true') return;
+                if (!chatBox || window.__scrollListenerBound) return;
                 
-                chatBox.setAttribute('data-scroll-listener', 'true');
-                chatBox.addEventListener('scroll', function() {
+                window.__scrollListenerBound = true;
+                // Usiamo onscroll per sovrascrivere eventuali listener morti di vecchi iframe
+                chatBox.onscroll = function() {{
                     const distanceToBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight;
                     userIsNearBottom = (distanceToBottom <= 140);
-                });
-            }
+                }};
+            }}
 
-            function initChatMutationObserver() {
+            function initChatMutationObserver() {{
                 const cols = getTopLevelCols();
                 const chatCol = cols[0];
-                if (!chatCol || chatCol.getAttribute('data-scroll-observer') === 'true') return;
+                if (!chatCol || window.__observerBound) return;
                 
-                chatCol.setAttribute('data-scroll-observer', 'true');
+                window.__observerBound = true;
                 setupScrollListener();
                 
-                const observer = new MutationObserver(function() {
+                const observer = new MutationObserver(function() {{
                     setupScrollListener();
-                    if (userIsNearBottom) {
+                    if (userIsNearBottom) {{
                         autoScrollChatToBottom(false);
-                    }
-                });
+                    }}
+                }});
                 
-                observer.observe(chatCol, {
+                observer.observe(chatCol, {{
                     childList: true,
                     subtree: true,
                     characterData: true
-                });
-            }
+                }});
+            }}
 
-            function syncChatInputPos() {
-                const cols = getTopLevelCols();
-                const leftCol = cols[0];
-                const chatInput = pDoc.querySelector('div[data-testid="stChatInput"]');
-                if (leftCol && chatInput) {
-                    const rect = leftCol.getBoundingClientRect();
-                    chatInput.style.position = 'fixed';
-                    chatInput.style.bottom = '15px';
-                    chatInput.style.left = (rect.left + 5) + 'px';
-                    chatInput.style.width = Math.max(180, rect.width - 25) + 'px';
-                    chatInput.style.zIndex = '99999';
-                }
-            }
-
-            function initPillDrag() {
+            function initPillDrag() {{
                 const pill = pDoc.getElementById('drag-handle-pill-native');
                 syncChatInputPos();
                 initChatMutationObserver();
                 autoScrollChatToBottom(true);
                 
-                if (!pill || pill.getAttribute('data-drag-bound') === 'true') return;
-                pill.setAttribute('data-drag-bound', 'true');
+                if (!pill || window.__dragBound) return;
+                window.__dragBound = true;
                 
                 const handleCol = pill.closest('[data-testid="stColumn"]');
                 if (!handleCol) return;
@@ -1114,20 +1336,20 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 
                 let isDragging = false;
                 
-                pill.addEventListener('mouseenter', function() {
-                    if (!isDragging) {
+                pill.addEventListener('mouseenter', function() {{
+                    if (!isDragging) {{
                         pill.style.backgroundColor = '#38bdf8';
                         pill.style.borderColor = '#38bdf8';
-                    }
-                });
-                pill.addEventListener('mouseleave', function() {
-                    if (!isDragging) {
+                    }}
+                }});
+                pill.addEventListener('mouseleave', function() {{
+                    if (!isDragging) {{
                         pill.style.backgroundColor = '#2b2b2b';
                         pill.style.borderColor = '#444444';
-                    }
-                });
+                    }}
+                }});
                 
-                pill.addEventListener('mousedown', function(e) {
+                pill.addEventListener('mousedown', function(e) {{
                     isDragging = true;
                     pDoc.body.style.cursor = 'col-resize';
                     pDoc.body.style.userSelect = 'none';
@@ -1139,9 +1361,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     midCol.style.minWidth = '0px';
                     rightCol.style.minWidth = '0px';
                     e.preventDefault();
-                });
+                }});
                 
-                pDoc.addEventListener('mousemove', function(e) {
+                pDoc.addEventListener('mousemove', function(e) {{
                     if (!isDragging) return;
                     const rect = studioBlock.getBoundingClientRect();
                     let pct = ((e.clientX - rect.left) / rect.width) * 100;
@@ -1167,31 +1389,35 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     rightCol.style.width = rightPct + '%';
                     
                     syncChatInputPos();
-                });
+                }});
                 
-                pDoc.addEventListener('mouseup', function() {
-                    if (isDragging) {
+                pDoc.addEventListener('mouseup', function() {{
+                    if (isDragging) {{
                         isDragging = false;
                         pDoc.body.style.cursor = 'default';
                         pDoc.body.style.userSelect = 'auto';
                         pill.style.backgroundColor = '#2b2b2b';
                         pill.style.borderColor = '#444444';
                         pill.style.transform = 'scale(1.0)';
-                    }
-                });
-            }
+                    }}
+                }});
+            }}
             
             setTimeout(initPillDrag, 20);
             setTimeout(initChatMutationObserver, 50);
-            setTimeout(function() { autoScrollChatToBottom(true); }, 80);
+            setTimeout(syncChatInputPos, 50);
+            setTimeout(function() {{ autoScrollChatToBottom(true); }}, 80);
+            // Backup scroll per coprire i ritardi di rendering di Streamlit
+            setTimeout(function() {{ autoScrollChatToBottom(true); }}, 300);
             
-            setInterval(function() {
+            setInterval(function() {{
+                readStreamingFlagFromDOM();
                 syncChatInputPos();
                 setupScrollListener();
-            }, 150);
+            }}, 150);
             
             window.addEventListener('resize', syncChatInputPos);
-        })();
+        }})();
         </script>
         """
         st.iframe(draggable_handle_js, height=1)
@@ -1214,6 +1440,11 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
             if st.session_state.pending_agent_stream:
                 stream_container = st.empty()
+            
+            # Spaziatore inferiore di 30px per dare la giusta spaziatura in fondo all'ultimo messaggio
+            st.markdown("<div id='chat-bottom-spacer' style='height: 30px; width: 100%;'></div>", unsafe_allow_html=True)
+
+            if st.session_state.pending_agent_stream:
                 chat_response_placeholder = None
                 chat_bubble_created = False
                 full_raw_response = ""
@@ -1315,8 +1546,6 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     st.error(f"❌ Errore durante la risposta dell'Assistente: {str(e)}")
                     st.session_state.canvas_chat_history.append({"role": "assistant", "content": f"⚠️ Si è verificato un errore durante l'elaborazione: {str(e)}"})
                     st.rerun()
-            # Spaziatore inferiore di 30px per dare la giusta spaziatura in fondo all'ultimo messaggio
-            st.markdown("<div id='chat-bottom-spacer' style='height: 30px; width: 100%;'></div>", unsafe_allow_html=True)
 
         # Campo chat_input nativo (nascosto visivamente da JS e usato come bridge per inviare i messaggi)
         user_input = st.chat_input("Chiedi all'Assistente AI di modificare il Canvas...")
@@ -1327,439 +1556,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             st.rerun()
 
 
-    # --- INIEZIONE BARRA CHAT PERSONALIZZATA STILE CHATGPT E GESTIONE PILLOLA #drag-handle-pill-native ---
-    is_streaming_js = "true" if st.session_state.pending_agent_stream else "false"
-    model_badge_text = f"✨ {selected_model.replace('gemini-', 'Gemini ').replace('-', ' ').title()}"
-    draggable_handle_js = f"""
-    <script>
-    (function() {{
-        const pDoc = window.parent.document;
-        const pWin = pDoc.defaultView || window.parent;
-        let userIsNearBottom = true;
 
-        // FLAG STREAMING SUL PARENT WINDOW (condiviso tra tutti gli iframe)
-        pWin.__isAgentStreaming = {is_streaming_js};
-
-        // Legge il flag streaming dal DOM - usato SOLO per sbloccare più velocemente
-        // dopo la fine dello streaming (mai per impostare true→false durante streaming)
-        function readStreamingFlagFromDOM() {{
-            const flagEl = pDoc.getElementById('streaming-state-flag');
-            if (flagEl) {{
-                const domSaysStreaming = (flagEl.getAttribute('data-streaming') === 'true');
-                // Se il DOM dice "streaming", imposta true (sicuro)
-                // Se il DOM dice "non streaming", imposta false SOLO se il flag era true
-                // (sblocca dopo fine streaming)
-                if (domSaysStreaming) {{
-                    pWin.__isAgentStreaming = true;
-                }} else {{
-                    pWin.__isAgentStreaming = false;
-                }}
-            }}
-            // Se il flag NON è nel DOM, NON toccare pWin.__isAgentStreaming
-        }}
-
-        // 1. Nasconde la barra nativa ma la lascia FUNZIONALE per click programmatici
-        function hideNativeChatInput() {{
-            const nativeInput = pDoc.querySelector('div[data-testid="stChatInput"]');
-            if (nativeInput && nativeInput.getAttribute('data-custom-hidden') !== 'true') {{
-                nativeInput.setAttribute('data-custom-hidden', 'true');
-                nativeInput.style.cssText = 'position:fixed !important; bottom:0 !important; left:0 !important; width:1px !important; height:1px !important; opacity:0 !important; overflow:hidden !important; z-index:-1 !important; clip:rect(0,0,0,0) !important;';
-            }}
-        }}
-
-        // 2. Crea o aggiorna la barra personalizzata stile ChatGPT
-        function ensureCustomChatGPTBar() {{
-            let bar = pDoc.getElementById('custom-chatgpt-bar');
-            if (!bar) {{
-                bar = pDoc.createElement('div');
-                bar.id = 'custom-chatgpt-bar';
-                bar.innerHTML = `
-                    <style>
-                        #custom-chatgpt-bar {{
-                            position: fixed;
-                            bottom: 15px;
-                            background: #2f2f2f;
-                            border: 1px solid #424242;
-                            border-radius: 20px;
-                            padding: 8px 12px 8px 16px;
-                            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-                            z-index: 99999;
-                            display: flex;
-                            flex-direction: row;
-                            align-items: flex-end;
-                            gap: 12px;
-                            box-sizing: border-box;
-                            transition: border-color 0.2s, box-shadow 0.2s;
-                        }}
-                        #custom-chatgpt-bar:focus-within {{
-                            border-color: #555555;
-                            box-shadow: 0 8px 28px rgba(0,0,0,0.7);
-                        }}
-                        #custom-chatgpt-textarea {{
-                            flex-grow: 1;
-                            background: transparent;
-                            border: none;
-                            outline: none;
-                            color: #ececec;
-                            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                            font-size: 14px;
-                            line-height: 1.45;
-                            resize: none;
-                            max-height: 120px;
-                            min-height: 24px;
-                            padding: 5px 0;
-                            box-sizing: border-box;
-                        }}
-                        #custom-chatgpt-textarea::placeholder {{
-                            color: #8e8e8e;
-                        }}
-                        .chatgpt-send-btn {{
-                            width: 32px;
-                            height: 32px;
-                            min-width: 32px;
-                            border-radius: 50%;
-                            border: none;
-                            background: #424242;
-                            color: #8e8e8e;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            cursor: not-allowed;
-                            transition: background-color 0.2s, transform 0.1s, color 0.2s;
-                            margin-bottom: 2px;
-                        }}
-                        .chatgpt-send-btn.active {{
-                            background: #ffffff !important;
-                            color: #000000 !important;
-                            cursor: pointer !important;
-                        }}
-                        .chatgpt-send-btn.active:hover {{
-                            transform: scale(1.06);
-                        }}
-                        .chatgpt-send-btn.streaming {{
-                            background: #38bdf8 !important;
-                            color: #ffffff !important;
-                            cursor: not-allowed !important;
-                            animation: pulse-stream 1.5s infinite;
-                        }}
-                        @keyframes pulse-stream {{
-                            0% {{ opacity: 0.6; }}
-                            50% {{ opacity: 1; }}
-                            100% {{ opacity: 0.6; }}
-                        }}
-                    </style>
-                    <textarea id="custom-chatgpt-textarea" placeholder="Chiedi all'Assistente AI di modificare il Canvas..." rows="1"></textarea>
-                    <button id="custom-chatgpt-send-btn" class="chatgpt-send-btn" title="Invia messaggio">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="12" y1="19" x2="12" y2="5"></line>
-                            <polyline points="5 12 12 5 19 12"></polyline>
-                        </svg>
-                    </button>
-                `;
-                pDoc.body.appendChild(bar);
-            }}
-
-            const textarea = pDoc.getElementById('custom-chatgpt-textarea');
-            const sendBtn = pDoc.getElementById('custom-chatgpt-send-btn');
-
-            function updateSendBtnState() {{
-                if (!textarea || !sendBtn) return;
-                const val = textarea.value.trim();
-                if (pWin.__isAgentStreaming) {{
-                    sendBtn.className = 'chatgpt-send-btn streaming';
-                    sendBtn.title = "Assistente al lavoro...";
-                }} else if (val.length > 0) {{
-                    sendBtn.className = 'chatgpt-send-btn active';
-                    sendBtn.title = "Invia messaggio";
-                }} else {{
-                    sendBtn.className = 'chatgpt-send-btn';
-                    sendBtn.title = "Scrivi un messaggio...";
-                }}
-            }}
-
-            function autoResizeTextarea() {{
-                if (!textarea) return;
-                textarea.style.height = 'auto';
-                textarea.style.height = Math.min(120, textarea.scrollHeight) + 'px';
-                updateSendBtnState();
-            }}
-
-            function submitCustomMessage() {{
-                if (pWin.__isAgentStreaming) return;
-                if (!textarea) return;
-                const val = textarea.value.trim();
-                if (!val) return;
-
-                // Rende la chat nativa temporaneamente accessibile per il click
-                const nativeInputContainer = pDoc.querySelector('div[data-testid="stChatInput"]');
-                if (nativeInputContainer) {{
-                    nativeInputContainer.style.cssText = 'position:fixed; bottom:0; left:0; width:1px; height:1px; opacity:0; overflow:hidden; z-index:-1;';
-                    nativeInputContainer.removeAttribute('data-custom-hidden');
-                }}
-                const nativeTextarea = nativeInputContainer ? nativeInputContainer.querySelector('textarea') : null;
-                const nativeButton = nativeInputContainer ? (nativeInputContainer.querySelector('button[data-testid="stChatInputSubmitButton"]') || nativeInputContainer.querySelector('button')) : null;
-
-                if (nativeTextarea && nativeButton) {{
-                    // React-compatible value setter
-                    const nativeSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, "value").set;
-                    nativeSetter.call(nativeTextarea, val);
-                    nativeTextarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    nativeTextarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    
-                    // Salva il testo nella custom bar per ripristino se necessario
-                    textarea.value = '';
-                    autoResizeTextarea();
-
-                    // Simula l'invio premendo Enter direttamente sulla textarea nativa
-                    nativeTextarea.dispatchEvent(new KeyboardEvent('keydown', {{
-                        key: 'Enter',
-                        code: 'Enter',
-                        keyCode: 13,
-                        which: 13,
-                        bubbles: true,
-                        cancelable: true
-                    }}));
-
-                    // Attende che React aggiorni lo stato interno prima di fare click
-                    setTimeout(function() {{
-                        // Rimuovi eventuali disabled dal pulsante nativo
-                        nativeButton.disabled = false;
-                        nativeButton.removeAttribute('disabled');
-                        nativeButton.click();
-                        
-                        // Rimetti il focus sulla textarea custom dopo l'invio
-                        setTimeout(function() {{
-                            const ta = pDoc.getElementById('custom-chatgpt-textarea');
-                            if (ta) ta.focus();
-                        }}, 50);
-                    }}, 150);
-                }}
-            }}
-
-            // Assegna i listener UNA sola volta (data-events-bound).
-            // I listener leggono pWin.__isAgentStreaming che è aggiornato dal parent window.
-            if (textarea && !textarea.getAttribute('data-events-bound')) {{
-                textarea.setAttribute('data-events-bound', 'true');
-                textarea.addEventListener('input', function(e) {{
-                    e.stopPropagation();
-                    textarea.style.height = 'auto';
-                    textarea.style.height = Math.min(120, textarea.scrollHeight) + 'px';
-                    updateSendBtnState();
-                }});
-                // Blocca la propagazione di TUTTI gli eventi tastiera verso Streamlit
-                // (altrimenti tasti come 'C' aprono "Clear caches", 'R' fa rerun, ecc.)
-                textarea.addEventListener('keydown', function(e) {{
-                    e.stopPropagation();
-                    if (e.key === 'Enter' && !e.shiftKey) {{
-                        e.preventDefault();
-                        if (!pWin.__isAgentStreaming) {{
-                            submitCustomMessage();
-                        }}
-                        // Se in streaming, non fa nulla: il testo resta nella textarea
-                    }}
-                }});
-                textarea.addEventListener('keypress', function(e) {{ e.stopPropagation(); }});
-                textarea.addEventListener('keyup', function(e) {{ e.stopPropagation(); }});
-            }}
-
-            if (sendBtn && !sendBtn.getAttribute('data-events-bound')) {{
-                sendBtn.setAttribute('data-events-bound', 'true');
-                sendBtn.addEventListener('click', function(e) {{
-                    e.preventDefault();
-                    if (!pWin.__isAgentStreaming) {{
-                        submitCustomMessage();
-                    }}
-                }});
-            }}
-
-            updateSendBtnState();
-        }}
-
-        function getTopLevelCols() {{
-            const handle = pDoc.getElementById('drag-handle-pill-native');
-            if (!handle) return [];
-            const handleCol = handle.closest('[data-testid="stColumn"]');
-            if (!handleCol) return [];
-            const studioBlock = handleCol.parentElement;
-            if (!studioBlock) return [];
-            return Array.from(studioBlock.children).filter(el => el.getAttribute('data-testid') === 'stColumn');
-        }}
-
-        function syncChatInputPos() {{
-            hideNativeChatInput();
-            ensureCustomChatGPTBar();
-            const cols = getTopLevelCols();
-            const leftCol = cols[0];
-            const bar = pDoc.getElementById('custom-chatgpt-bar');
-            if (leftCol && bar) {{
-                const rect = leftCol.getBoundingClientRect();
-                bar.style.left = (rect.left + 8) + 'px';
-                bar.style.width = Math.max(200, rect.width - 20) + 'px';
-            }}
-        }}
-
-        function getChatBox() {{
-            const cols = getTopLevelCols();
-            const chatCol = cols[0];
-            if (!chatCol) return null;
-            return chatCol.querySelector('[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]') ||
-                   chatCol.querySelector('div[data-testid="stElementContainer"]') ||
-                   chatCol;
-        }}
-
-        function autoScrollChatToBottom(force) {{
-            const chatBox = getChatBox();
-            if (!chatBox) return;
-
-            if (force || userIsNearBottom) {{
-                chatBox.scrollTop = chatBox.scrollHeight;
-                const spacer = pDoc.getElementById('chat-bottom-spacer');
-                if (spacer) {{
-                    spacer.scrollIntoView({{ behavior: 'instant', block: 'end' }});
-                }}
-            }}
-        }}
-
-        function setupScrollListener() {{
-            const chatBox = getChatBox();
-            if (!chatBox || chatBox.getAttribute('data-scroll-listener') === 'true') return;
-            
-            chatBox.setAttribute('data-scroll-listener', 'true');
-            chatBox.addEventListener('scroll', function() {{
-                const distanceToBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight;
-                userIsNearBottom = (distanceToBottom <= 140);
-            }});
-        }}
-
-        function initChatMutationObserver() {{
-            const cols = getTopLevelCols();
-            const chatCol = cols[0];
-            if (!chatCol || chatCol.getAttribute('data-scroll-observer') === 'true') return;
-            
-            chatCol.setAttribute('data-scroll-observer', 'true');
-            setupScrollListener();
-            
-            const observer = new MutationObserver(function() {{
-                setupScrollListener();
-                if (userIsNearBottom) {{
-                    autoScrollChatToBottom(false);
-                }}
-            }});
-            
-            observer.observe(chatCol, {{
-                childList: true,
-                subtree: true,
-                characterData: true
-            }});
-        }}
-
-        function initPillDrag() {{
-            const pill = pDoc.getElementById('drag-handle-pill-native');
-            syncChatInputPos();
-            initChatMutationObserver();
-            autoScrollChatToBottom(true);
-            
-            if (!pill || pill.getAttribute('data-drag-bound') === 'true') return;
-            pill.setAttribute('data-drag-bound', 'true');
-            
-            const handleCol = pill.closest('[data-testid="stColumn"]');
-            if (!handleCol) return;
-            
-            const studioBlock = handleCol.parentElement;
-            if (!studioBlock) return;
-            
-            const cols = Array.from(studioBlock.children).filter(el => el.getAttribute('data-testid') === 'stColumn');
-            if (cols.length < 3) return;
-            
-            const leftCol = cols[0];
-            const midCol = cols[1];
-            const rightCol = cols[2];
-            
-            let isDragging = false;
-            
-            pill.addEventListener('mouseenter', function() {{
-                if (!isDragging) {{
-                    pill.style.backgroundColor = '#38bdf8';
-                    pill.style.borderColor = '#38bdf8';
-                }}
-            }});
-            pill.addEventListener('mouseleave', function() {{
-                if (!isDragging) {{
-                    pill.style.backgroundColor = '#2b2b2b';
-                    pill.style.borderColor = '#444444';
-                }}
-            }});
-            
-            pill.addEventListener('mousedown', function(e) {{
-                isDragging = true;
-                pDoc.body.style.cursor = 'col-resize';
-                pDoc.body.style.userSelect = 'none';
-                pill.style.backgroundColor = '#38bdf8';
-                pill.style.borderColor = '#38bdf8';
-                pill.style.transform = 'scale(1.15)';
-                studioBlock.style.flexWrap = 'nowrap';
-                leftCol.style.minWidth = '0px';
-                midCol.style.minWidth = '0px';
-                rightCol.style.minWidth = '0px';
-                e.preventDefault();
-            }});
-            
-            pDoc.addEventListener('mousemove', function(e) {{
-                if (!isDragging) return;
-                const rect = studioBlock.getBoundingClientRect();
-                let pct = ((e.clientX - rect.left) / rect.width) * 100;
-                
-                pct = Math.max(20, Math.min(75, pct));
-                let midPct = 2;
-                let rightPct = Math.max(20, 100 - pct - midPct);
-                
-                studioBlock.style.display = 'flex';
-                studioBlock.style.flexDirection = 'row';
-                studioBlock.style.flexWrap = 'nowrap';
-                
-                leftCol.style.flex = '0 0 ' + pct + '%';
-                leftCol.style.maxWidth = pct + '%';
-                leftCol.style.width = pct + '%';
-                
-                midCol.style.flex = '0 0 ' + midPct + '%';
-                midCol.style.maxWidth = midPct + '%';
-                midCol.style.width = midPct + '%';
-                
-                rightCol.style.flex = '0 0 ' + rightPct + '%';
-                rightCol.style.maxWidth = rightPct + '%';
-                rightCol.style.width = rightPct + '%';
-                
-                syncChatInputPos();
-            }});
-            
-            pDoc.addEventListener('mouseup', function() {{
-                if (isDragging) {{
-                    isDragging = false;
-                    pDoc.body.style.cursor = 'default';
-                    pDoc.body.style.userSelect = 'auto';
-                    pill.style.backgroundColor = '#2b2b2b';
-                    pill.style.borderColor = '#444444';
-                    pill.style.transform = 'scale(1.0)';
-                }}
-            }});
-        }}
-        
-        setTimeout(initPillDrag, 20);
-        setTimeout(initChatMutationObserver, 50);
-        setTimeout(syncChatInputPos, 50);
-        setTimeout(function() {{ autoScrollChatToBottom(true); }}, 80);
-        
-        setInterval(function() {{
-            readStreamingFlagFromDOM();
-            syncChatInputPos();
-            setupScrollListener();
-        }}, 150);
-        
-        window.addEventListener('resize', syncChatInputPos);
-    }})();
-    </script>
-    """
-    st.iframe(draggable_handle_js, height=1)
 
 # ==============================================================================
 # PAGINA PRINCIPALE: CONFIGURAZIONE FORM & GENERAZIONE
