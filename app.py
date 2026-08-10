@@ -1748,11 +1748,17 @@ else:
         )
 
         if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
-            fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
-            if fetched_notes:
-                add_note_version(fetched_notes)
-                st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
-                st.session_state.notion_page_url = existing_notion_url
+            with st.spinner("Recupero appunti e trascrizione in corso..."):
+                fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
+                if fetched_notes:
+                    add_note_version(fetched_notes)
+                    st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
+                    st.session_state.notion_page_url = existing_notion_url
+                    
+                    if url and not st.session_state.testo_estratto:
+                        success_tr, text_tr, _ = download_and_process(url)
+                        if success_tr:
+                            st.session_state.testo_estratto = text_tr
 
     st.session_state.already_processed = already_processed
     st.divider()
@@ -1787,6 +1793,12 @@ else:
                         fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
                         if fetched_notes:
                             add_note_version(fetched_notes)
+                            
+                    if url and not st.session_state.testo_estratto:
+                        status.update(label="📄 Caricamento appunti da Notion ed estrazione trascrizione da Vimeo in corso...")
+                        success_tr, text_tr, _ = download_and_process(url)
+                        if success_tr:
+                            st.session_state.testo_estratto = text_tr
 
                     if st.session_state.appunti_generati:
                         success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
