@@ -1587,7 +1587,87 @@ else:
     except AttributeError:
         components.html(cleanup_js, height=1)
 
-    st.title("🎓 Da Vimeo ad Appunti & Notion")
+    @st.dialog("🌟 Scopri le novità del sistema", width="large")
+    def show_onboarding_dialog():
+        if "feature_index" not in st.session_state:
+            st.session_state.feature_index = 0
+
+        features = [
+            {
+                "title": "🔗 Da Vimeo a Notion, in automatico",
+                "desc": "Inserendo il link della lezione, gli appunti vengono elaborati e generati automaticamente in pochi secondi, per poi essere salvati in modo diretto all'interno del database Notion.",
+                "video_path": "demo_1_notion.mp4"
+            },
+            {
+                "title": "🧠 Gestione Intelligente dei Duplicati",
+                "desc": "Se viene inserito un video già elaborato, gli appunti salvati su Notion vengono recuperati istantaneamente. Nel caso di una seconda parte di lezione, se materia e data coincidono, le nuove informazioni vengono integrate in automatico in fondo alla pagina originale, evitando la creazione di duplicati.",
+                "video_path": "demo_2_duplicati.mp4"
+            },
+            {
+                "title": "🎨 Appunti su Misura (Prompt Personalizzato)",
+                "desc": "È possibile avere il pieno controllo dello stile degli appunti. Modificando le istruzioni di base fornite all'intelligenza artificiale, si ottengono riassunti che si adattano perfettamente a qualsiasi metodo di studio o esigenza accademica.",
+                "video_path": "demo_3_prompt.mp4"
+            },
+            {
+                "title": "✨ Nuovo Canvas Immersivo e Chat AI",
+                "desc": "Gli appunti possono essere revisionati in una modalità a tutto schermo pensata per la massima concentrazione. È possibile apportare modifiche tramite una semplice chat integrata, ottenendo un aggiornamento del documento in tempo reale senza alcuna necessità di riscrittura manuale.",
+                "video_path": "demo_4_canvas.mp4"
+            },
+            {
+                "title": "⏱️ La \"Macchina del Tempo\" delle versioni",
+                "desc": "In caso di errori o ripensamenti durante le modifiche, ogni passaggio viene salvato automaticamente. È possibile scorrere avanti e indietro nel tempo tra le varie versioni con un semplice clic, evitando qualsiasi perdita di dati.",
+                "video_path": "demo_5_versioning.mp4"
+            },
+            {
+                "title": "📐 Esportazione LaTeX in Background",
+                "desc": "È disponibile la formattazione professionale in codice LaTeX per le materie scientifiche. L'operazione viene eseguita in background senza bloccare l'interfaccia, consentendo di continuare a utilizzare l'applicazione liberamente mentre il file .tex viene preparato per il download.",
+                "video_path": "demo_6_latex.mp4"
+            }
+        ]
+
+        current_feature = features[st.session_state.feature_index]
+        c_text, c_video = st.columns([1, 1.2])
+
+        with c_text:
+            st.markdown(f"#### {current_feature['title']}")
+            st.write(current_feature['desc'])
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            nav_col1, nav_col2, _ = st.columns([1, 1, 1.5])
+            if nav_col1.button("⬅️ Prec.", disabled=(st.session_state.feature_index == 0)):
+                st.session_state.feature_index -= 1
+            if nav_col2.button("Pros. ➡️", disabled=(st.session_state.feature_index == len(features) - 1)):
+                st.session_state.feature_index += 1
+                
+            dots = "".join(["🔵 " if i == st.session_state.feature_index else "⚪ " for i in range(len(features))])
+            st.caption(f"Slide {st.session_state.feature_index + 1} di {len(features)} &nbsp; {dots}")
+
+        with c_video:
+            import os, base64
+            video_file_path = current_feature["video_path"]
+            if os.path.exists(video_file_path):
+                with open(video_file_path, "rb") as f:
+                    video_bytes = f.read()
+                video_base64 = base64.b64encode(video_bytes).decode("utf-8")
+                st.markdown(
+                    f"""
+                    <video width="100%" autoplay loop muted playsinline style="border-radius: 12px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
+                        <source src="data:video/mp4;base64,{video_base64}" type="video/mp4">
+                    </video>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                st.info(f"🎥 **Video Placeholder**\n\nSostituisci questo box con il tuo video '{video_file_path}'.")
+
+    col_title_main, col_btn_news = st.columns([4, 1])
+    with col_title_main:
+        st.title("🎓 Da Vimeo ad Appunti & Notion")
+    with col_btn_news:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("✨ Scopri le Novità", use_container_width=True):
+            show_onboarding_dialog()
+
     st.markdown("Estrai la trascrizione dai video Vimeo, genera ed edita appunti universitari con Gemini e salvali direttamente su **Notion**.")
 
     col_left, col_right = st.columns([2, 1])
