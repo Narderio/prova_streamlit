@@ -268,7 +268,7 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
     blocks = notion_helper.markdown_to_notion_blocks(markdown_text)
 
     # 4. Inserisci i blocchi nella pagina Notion
-    success_app, err_app = notion_helper.append_notes_to_page(ldoveesson_page_id, blocks, is_append=is_existing, api_key=api_key)
+    success_app, err_app = notion_helper.append_notes_to_page(lesson_page_id, blocks, is_append=is_existing, api_key=api_key)
     if not success_app:
         return False, f"Errore scrittura blocchi su Notion: {err_app}", None
 
