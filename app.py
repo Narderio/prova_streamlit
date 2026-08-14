@@ -17,7 +17,7 @@ importlib.reload(backend)
 importlib.reload(notion_helper)
 importlib.reload(supabase_client)
 
-from backend import download_and_process, generate_notes, generate_latex, export_to_notion, extract_vimeo_ids, agent_edit_notes, agent_edit_notes_stream, DEFAULT_PROMPT
+from backend import download_and_process, fetch_aggregated_transcript, generate_notes, generate_latex, export_to_notion, extract_vimeo_ids, agent_edit_notes, agent_edit_notes_stream, parse_agent_response, DEFAULT_PROMPT
 
 load_dotenv()
 
@@ -154,6 +154,10 @@ def cached_get_available_courses(corsi_id, token):
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_is_video_processed(v_id):
     return supabase_client.is_video_processed(v_id)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_get_all_lesson_videos(video_id=None, course=None, lesson_date=None, notion_page_id=None):
+    return supabase_client.get_all_lesson_videos(video_id=video_id, course=course, lesson_date=lesson_date, notion_page_id=notion_page_id)
 
 @st.cache_data(ttl=600, show_spinner=False)
 def cached_get_notion_page_markdown(page_id, token):
@@ -1480,34 +1484,29 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                     chat_response_placeholder = st.empty()
 
                         full_raw_response += chunk_text
-                        if "<<<UPDATED_CANVAS>>>" in full_raw_response:
-                            parts = full_raw_response.split("<<<UPDATED_CANVAS>>>")
-                            chat_part = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
-                            canvas_part = parts[1].strip()
-                            if chat_response_placeholder:
-                                chat_response_placeholder.markdown(chat_part)
-                            if canvas_part.upper() != "NO_CHANGE" and len(canvas_part) > 5:
-                                cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(canvas_part)
-                                if not st.session_state.get("stream_version_created", False):
-                                    add_note_version(cleaned_live_canvas)
-                                    st.session_state.stream_version_created = True
-                                    st.session_state.stream_target_version_index = st.session_state.current_version_index
-                                else:
-                                    target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
-                                    if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
-                                        st.session_state.notes_versions[target_idx] = cleaned_live_canvas
-                                    
-                                    if st.session_state.get("current_version_index") == target_idx:
-                                        st.session_state.appunti_generati = cleaned_live_canvas
-                                        st.session_state._last_valid_appunti = cleaned_live_canvas
-                                        safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
-                                        safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
-                                        if canvas_placeholder is not None:
-                                            canvas_placeholder.markdown(cleaned_live_canvas)
-                        else:
-                            chat_part = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip()
-                            if chat_response_placeholder:
-                                chat_response_placeholder.markdown(chat_part)
+                        live_chat_part, live_canvas_part = parse_agent_response(full_raw_response)
+                        
+                        if chat_response_placeholder:
+                            chat_response_placeholder.markdown(live_chat_part)
+                        
+                        if live_canvas_part and live_canvas_part != "NO_CHANGE" and len(live_canvas_part) > 5:
+                            cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(live_canvas_part)
+                            if not st.session_state.get("stream_version_created", False):
+                                add_note_version(cleaned_live_canvas)
+                                st.session_state.stream_version_created = True
+                                st.session_state.stream_target_version_index = st.session_state.current_version_index
+                            else:
+                                target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
+                                if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
+                                    st.session_state.notes_versions[target_idx] = cleaned_live_canvas
+                                
+                                if st.session_state.get("current_version_index") == target_idx:
+                                    st.session_state.appunti_generati = cleaned_live_canvas
+                                    st.session_state._last_valid_appunti = cleaned_live_canvas
+                                    safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
+                                    safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
+                                    if canvas_placeholder is not None:
+                                        canvas_placeholder.markdown(cleaned_live_canvas)
 
                     # Controllo finale: se non ha emesso nulla, crea comunque la bolla
                     if not chat_bubble_created:
@@ -1517,31 +1516,23 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                 st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
                                 chat_response_placeholder = st.empty()
 
-                    if "<<<CHAT_RESPONSE>>>" in full_raw_response and "<<<UPDATED_CANVAS>>>" in full_raw_response:
-                        parts = full_raw_response.split("<<<UPDATED_CANVAS>>>")
-                        final_chat_reply = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
-                        raw_canvas = parts[1].strip()
-                        if raw_canvas.upper() != "NO_CHANGE" and len(raw_canvas) > 5:
-                            cleaned_canvas = notion_helper.clean_markdown_for_streamlit(raw_canvas)
-                            target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
-                            if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
-                                st.session_state.notes_versions[target_idx] = cleaned_canvas
-                            switch_note_version(target_idx)
-                            st.toast(f"⚡ Canvas aggiornato alla Versione {target_idx + 1}!", icon="✅")
-                        else:
-                            if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
-                                st.session_state.notes_versions.pop()
-                                switch_note_version(len(st.session_state.notes_versions) - 1)
-                            st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
+                    final_chat_reply, final_canvas = parse_agent_response(full_raw_response)
+
+                    if final_canvas and final_canvas != "NO_CHANGE" and len(final_canvas) > 5:
+                        cleaned_canvas = notion_helper.clean_markdown_for_streamlit(final_canvas)
+                        target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
+                        if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
+                            st.session_state.notes_versions[target_idx] = cleaned_canvas
+                        switch_note_version(target_idx)
+                        st.toast(f"⚡ Canvas aggiornato alla Versione {target_idx + 1}!", icon="✅")
                     else:
                         if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
                             st.session_state.notes_versions.pop()
                             switch_note_version(len(st.session_state.notes_versions) - 1)
-                        final_chat_reply = full_raw_response.replace("<<<CHAT_RESPONSE>>>", "").strip() or "Risposta dell'assistente."
                         st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
                         
                     st.session_state.stream_version_created = False
-                    st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply})
+                    st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply or "Risposta dell'assistente."})
                     st.session_state.pending_agent_stream = False
                     st.rerun()
                 except Exception as e:
@@ -1687,7 +1678,36 @@ else:
 
     def update_saved_vimeo_url():
         if "vimeo_url_input" in st.session_state:
-            st.session_state.saved_vimeo_url = st.session_state.vimeo_url_input
+            new_url = st.session_state.vimeo_url_input
+            old_url = st.session_state.get("saved_vimeo_url", "")
+            st.session_state.saved_vimeo_url = new_url
+            if new_url != old_url:
+                st.session_state.appunti_generati = None
+                st.session_state.testo_estratto = None
+                st.session_state.notes_versions = []
+                st.session_state.current_version_index = 0
+                st.session_state.latex_generato = None
+                st.session_state.notion_status = None
+                st.session_state.notion_page_url = None
+                st.session_state.canvas_chat_history = []
+                try:
+                    cached_is_video_processed.clear()
+                    cached_get_all_lesson_videos.clear()
+                except Exception:
+                    pass
+                v_id, _ = extract_vimeo_ids(new_url) if new_url else (None, None)
+                if v_id:
+                    is_p, rec = supabase_client.is_video_processed(v_id)
+                    if is_p and rec:
+                        if rec.get("lesson_date"):
+                            try:
+                                d_parts = str(rec.get("lesson_date")).split("-")
+                                if len(d_parts) == 3:
+                                    st.session_state.saved_lesson_date = datetime.date(int(d_parts[0]), int(d_parts[1]), int(d_parts[2]))
+                            except Exception:
+                                pass
+                        if rec.get("course"):
+                            st.session_state.selected_course_auto = rec.get("course")
 
     def update_saved_lesson_date():
         if "lesson_date_input" in st.session_state:
@@ -1706,7 +1726,10 @@ else:
         courses_dict = cached_get_available_courses(notion_corsi_id, notion_token)
         if courses_dict:
             course_names = list(courses_dict.keys())
-            selected_course = st.selectbox("Materia / Corso (Letto da Notion)", course_names)
+            def_idx = 0
+            if "selected_course_auto" in st.session_state and st.session_state.selected_course_auto in course_names:
+                def_idx = course_names.index(st.session_state.selected_course_auto)
+            selected_course = st.selectbox("Materia / Corso (Letto da Notion)", course_names, index=def_idx)
             selected_course_page_id = courses_dict[selected_course]
         else:
             st.info("💡 Nessun corso trovato o chiavi Notion non impostate nel file .env. Puoi scrivere la materia a mano:")
@@ -1838,17 +1861,30 @@ else:
         )
 
         if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
-            with st.spinner("Recupero appunti e trascrizione in corso..."):
+            with st.spinner("Recupero appunti e trascrizioni in corso..."):
                 fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
                 if fetched_notes:
                     add_note_version(fetched_notes)
                     st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
                     st.session_state.notion_page_url = existing_notion_url
                     
-                    if url and not st.session_state.testo_estratto:
-                        success_tr, text_tr, _ = download_and_process(url)
-                        if success_tr:
-                            st.session_state.testo_estratto = text_tr
+                    if not st.session_state.testo_estratto:
+                        all_videos = cached_get_all_lesson_videos(
+                            video_id=video_id_preview,
+                            course=record.get("course") if record else selected_course,
+                            lesson_date=record.get("lesson_date") if record else formatted_date_str,
+                            notion_page_id=saved_page_id
+                        )
+                        video_urls = [v.get("url") for v in all_videos if v.get("url")]
+                        if url and url not in video_urls:
+                            video_urls.append(url)
+                        if video_urls:
+                            _, agg_tr = fetch_aggregated_transcript(video_urls)
+                            st.session_state.testo_estratto = agg_tr
+                        elif url:
+                            success_tr, text_tr, _ = download_and_process(url)
+                            if success_tr:
+                                st.session_state.testo_estratto = text_tr
 
     st.session_state.already_processed = already_processed
     st.divider()
@@ -1884,11 +1920,24 @@ else:
                         if fetched_notes:
                             add_note_version(fetched_notes)
                             
-                    if url and not st.session_state.testo_estratto:
-                        status.update(label="📄 Caricamento appunti da Notion ed estrazione trascrizione da Vimeo in corso...")
-                        success_tr, text_tr, _ = download_and_process(url)
-                        if success_tr:
-                            st.session_state.testo_estratto = text_tr
+                    if not st.session_state.testo_estratto:
+                        status.update(label="📄 Caricamento appunti da Notion ed estrazione trascrizioni in corso...")
+                        all_videos = cached_get_all_lesson_videos(
+                            video_id=video_id_preview,
+                            course=record.get("course") if record else selected_course,
+                            lesson_date=record.get("lesson_date") if record else formatted_date_str,
+                            notion_page_id=saved_page_id
+                        )
+                        video_urls = [v.get("url") for v in all_videos if v.get("url")]
+                        if url and url not in video_urls:
+                            video_urls.append(url)
+                        if video_urls:
+                            _, agg_tr = fetch_aggregated_transcript(video_urls)
+                            st.session_state.testo_estratto = agg_tr
+                        elif url:
+                            success_tr, text_tr, _ = download_and_process(url)
+                            if success_tr:
+                                st.session_state.testo_estratto = text_tr
 
                     if st.session_state.appunti_generati:
                         success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
@@ -1963,6 +2012,36 @@ else:
                                     lesson_date=formatted_date_str,
                                     notion_page_id=notion_page_id
                                 )
+                                try:
+                                    cached_is_video_processed.clear()
+                                    cached_get_all_lesson_videos.clear()
+                                except Exception:
+                                    pass
+
+                            # Se gli appunti sono stati aggiunti o accodati, aggiorna il Canvas con la versione completa di Notion
+                            # e recupera le trascrizioni aggregate di tutti i video associati alla lezione del giorno
+                            if notion_page_id:
+                                full_notes = notion_helper.get_notion_page_markdown(notion_page_id, api_key=notion_token)
+                                if full_notes:
+                                    st.session_state.appunti_generati = full_notes
+                                    st.session_state._last_valid_appunti = full_notes
+                                    if len(st.session_state.notes_versions) > 0:
+                                        st.session_state.notes_versions[st.session_state.current_version_index] = full_notes
+                                    else:
+                                        add_note_version(full_notes)
+
+                                all_videos = supabase_client.get_all_lesson_videos(
+                                    video_id=v_id,
+                                    course=selected_course,
+                                    lesson_date=formatted_date_str,
+                                    notion_page_id=notion_page_id
+                                )
+                                video_urls = [v.get("url") for v in all_videos if v.get("url")]
+                                if url not in video_urls:
+                                    video_urls.append(url)
+                                if len(video_urls) > 1:
+                                    _, agg_tr = fetch_aggregated_transcript(video_urls)
+                                    st.session_state.testo_estratto = agg_tr
 
                 status.update(label="🎉 Elaborazione completata!", state="complete", expanded=False)
 

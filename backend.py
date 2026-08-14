@@ -203,6 +203,44 @@ def download_and_process(url):
     clean_text = extrat_clean_text_from_vtt(vtt_content)
     return True, clean_text, video_id
 
+def fetch_aggregated_transcript(video_urls: list) -> tuple[bool, str]:
+    """
+    Scarica ed unisce le trascrizioni di una o più parti video della stessa lezione/giornata.
+    Se c'è un solo video valido, restituisce la trascrizione diretta.
+    Se ci sono più video, li concatena formattando ciascuna sezione con intestazioni distinte.
+    """
+    if not video_urls:
+        return False, "Nessun URL video specificato."
+    
+    unique_urls = []
+    seen = set()
+    for u in video_urls:
+        if u and isinstance(u, str) and u.strip() and u.strip() not in seen:
+            unique_urls.append(u.strip())
+            seen.add(u.strip())
+            
+    if not unique_urls:
+        return False, "Nessun URL video valido trovato."
+        
+    if len(unique_urls) == 1:
+        success, text, _ = download_and_process(unique_urls[0])
+        return success, text
+
+    parts = []
+    total = len(unique_urls)
+    for idx, u in enumerate(unique_urls, 1):
+        v_id, _ = extract_vimeo_ids(u)
+        part_label = "Lezione Principale" if idx == 1 else f"Integrazione Lezione {idx - 1}"
+        success, text, _ = download_and_process(u)
+        header = f"=== 📝 PARTE {idx} di {total} ({part_label}) - Video ID: {v_id or u} ==="
+        if success and text:
+            parts.append(f"{header}\n\n{text.strip()}")
+        else:
+            parts.append(f"{header}\n\n[Trascrizione non disponibile: {text}]")
+            
+    separator = "\n\n" + ("=" * 60) + "\n\n"
+    return True, separator.join(parts)
+
 def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None):
     """
     Invia la trascrizione a Gemini per generare appunti strutturati.
@@ -294,11 +332,45 @@ REGOLE TASSATIVE E INVIOLABILI:
       - Fornisci l'INTERO documento Markdown degli appunti aggiornato sotto <<<UPDATED_CANVAS>>> (contenente SOLO ed ESCLUSIVAMENTE materiale didattico).
       - MODIFICA IL CANVAS SOLO QUANDO L'UTENTE LO CHIEDE ESPRESSAMENTE.
 
+3. TRASCRIZIONE MULTIPLA / LEZIONI AGGREGATE:
+   - Se la trascrizione grezza contiene più parti (es. PARTE 1, PARTE 2), significa che la lezione del giorno è composta da più video/integrazioni.
+   - Utilizza l'insieme di tutte le parti della trascrizione e degli appunti per rispondere con la massima precisione ed accuratezza.
+
 FORMATO DI RISPOSTA TASSATIVO ED OBBLIGATORIO:
 <<<CHAT_RESPONSE>>>
 [Risposta conversazionale, spiegazioni dei concetti per lo studio o descrizione di cosa hai modificato]
 <<<UPDATED_CANVAS>>>
 [Testo Markdown degli appunti completi OPPURE la sola parola NO_CHANGE se non è stata richiesta una modifica esplicita agli appunti]"""
+
+CANVAS_SPLIT_REGEX = re.compile(r'(?:\*{0,2}|#{0,3})<{1,4}\s*UPDATED_CANVAS[:\s]*>{0,4}(?:\*{0,2})', re.IGNORECASE)
+CHAT_TAG_REGEX = re.compile(r'(?:\*{0,2}|#{0,3})<{1,4}\s*CHAT_RESPONSE[:\s]*>{0,4}(?:\*{0,2})', re.IGNORECASE)
+
+def parse_agent_response(raw_text: str) -> tuple[str, str | None]:
+    """
+    Normalizza e separa la risposta dell'Agente Canvas in (chat_reply, canvas_part).
+    Gestisce con tolleranza eventuali errori di formattazione del modello (es. parentesi mancanti come <<<UPDATED_CANVAS>,
+    spaziature anomale, markdown grassetto, tag minuscoli, ecc.).
+    Restituisce:
+      - chat_reply (str): il messaggio destinato alla chat.
+      - canvas_part (str | None): il testo Markdown aggiornato per il Canvas, oppure None/'NO_CHANGE' se non presente/non modificato.
+    """
+    if not raw_text:
+        return "", None
+
+    match = CANVAS_SPLIT_REGEX.search(raw_text)
+    if match:
+        chat_raw = raw_text[:match.start()]
+        canvas_raw = raw_text[match.end():].strip()
+        chat_reply = CHAT_TAG_REGEX.sub('', chat_raw).strip()
+        
+        cleaned_check = canvas_raw.upper().replace('"', '').replace("'", "").replace("`", "").replace("*", "").strip()
+        if cleaned_check in ["NO_CHANGE", "NO_CHANGES", "NO CHANGE", "NESSUNA_MODIFICA", "NESSUN_CAMBIAMENTO", "NO-CHANGE", ""]:
+            return chat_reply or "Ho elaborato la tua richiesta.", "NO_CHANGE"
+        
+        return chat_reply or "Ho applicato le modifiche al Canvas.", canvas_raw
+    else:
+        chat_reply = CHAT_TAG_REGEX.sub('', raw_text).strip()
+        return chat_reply or "Risposta dell'assistente.", None
 
 def agent_edit_notes(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
     """
@@ -339,15 +411,11 @@ ISTRUZIONE DELL'UTENTE:
         )
         raw_text = response.text or ""
         
-        if "<<<CHAT_RESPONSE>>>" in raw_text and "<<<UPDATED_CANVAS>>>" in raw_text:
-            parts = raw_text.split("<<<UPDATED_CANVAS>>>")
-            chat_part = parts[0].replace("<<<CHAT_RESPONSE>>>", "").strip()
-            canvas_part = parts[1].strip()
-            chat_reply = chat_part
+        chat_reply, canvas_part = parse_agent_response(raw_text)
+        if canvas_part and canvas_part != "NO_CHANGE" and len(canvas_part) > 5:
             updated_markdown = notion_helper.clean_markdown_for_streamlit(canvas_part)
         else:
-            chat_reply = "Ho applicato le modifiche richieste agli appunti nel Canvas."
-            updated_markdown = notion_helper.clean_markdown_for_streamlit(raw_text)
+            updated_markdown = current_markdown
 
         return True, chat_reply, updated_markdown
     except Exception as e:

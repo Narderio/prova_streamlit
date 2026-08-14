@@ -52,7 +52,7 @@ def is_video_processed(video_id: str):
 def save_processed_lesson(video_id: str, url: str, course: str, lesson_date: str, notion_page_id: str = None):
     """
     Salva la lezione elaborata nella tabella processed_lessons di Supabase.
-    Preserva SEMPRE il notion_page_id della versione originale (la prima creata) per evitare che rielaborazioni future lo sovrascrivano.
+    Se viene fornito un nuovo notion_page_id, lo aggiorna; altrimenti preserva quello esistente.
     """
     client = get_supabase_client()
     if not client:
@@ -60,7 +60,6 @@ def save_processed_lesson(video_id: str, url: str, course: str, lesson_date: str
     try:
         iso_date = format_iso_date(lesson_date)
         
-        # Controlla se la lezione esiste già per non sovrascrivere l'ID della prima versione originale
         existing_page_id = None
         try:
             existing_res = client.table("processed_lessons").select("notion_page_id").eq("video_id", str(video_id)).execute()
@@ -69,8 +68,8 @@ def save_processed_lesson(video_id: str, url: str, course: str, lesson_date: str
         except Exception:
             pass
 
-        # Se esiste già un notion_page_id per la prima versione, MANTIENILO!
-        final_page_id = existing_page_id if (existing_page_id and str(existing_page_id).strip()) else notion_page_id
+        # Usa il nuovo notion_page_id se fornito, altrimenti mantieni quello esistente
+        final_page_id = notion_page_id if (notion_page_id and str(notion_page_id).strip()) else existing_page_id
 
         data = {
             "video_id": str(video_id),
@@ -84,6 +83,61 @@ def save_processed_lesson(video_id: str, url: str, course: str, lesson_date: str
     except Exception as e:
         print(f"Errore salvataggio Supabase: {e}")
         return False, f"Errore durante il salvataggio su Supabase: {e}"
+
+def get_all_lesson_videos(video_id: str = None, course: str = None, lesson_date: str = None, notion_page_id: str = None) -> list:
+    """
+    Recupera l'elenco di tutti i video (record) associati alla medesima lezione/giornata.
+    Cerca per notion_page_id e per (course, lesson_date), evitando duplicati.
+    Restituisce una lista di record ordinati per created_at (cronologico).
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+    
+    try:
+        target_page_id = notion_page_id
+        target_course = course
+        target_date = lesson_date
+
+        if video_id:
+            res_v = client.table("processed_lessons").select("*").eq("video_id", str(video_id)).execute()
+            if res_v.data and len(res_v.data) > 0:
+                rec = res_v.data[0]
+                if not target_page_id:
+                    target_page_id = rec.get("notion_page_id")
+                if not target_course:
+                    target_course = rec.get("course")
+                if not target_date:
+                    target_date = rec.get("lesson_date")
+
+        results = []
+        seen_ids = set()
+
+        # 1. Cerca per notion_page_id se disponibile
+        if target_page_id and str(target_page_id).strip():
+            res_p = client.table("processed_lessons").select("*").eq("notion_page_id", str(target_page_id)).order("created_at", desc=False).execute()
+            if res_p.data:
+                for r in res_p.data:
+                    vid = r.get("video_id")
+                    if vid and vid not in seen_ids:
+                        results.append(r)
+                        seen_ids.add(vid)
+
+        # 2. Cerca per (course, lesson_date) per includere eventuali video della stessa giornata
+        if target_course and target_date:
+            iso_date = format_iso_date(target_date)
+            res_cd = client.table("processed_lessons").select("*").eq("course", str(target_course)).eq("lesson_date", iso_date).order("created_at", desc=False).execute()
+            if res_cd.data:
+                for r in res_cd.data:
+                    vid = r.get("video_id")
+                    if vid and vid not in seen_ids:
+                        results.append(r)
+                        seen_ids.add(vid)
+
+        return results
+    except Exception as e:
+        print(f"Errore recupero video lezioni correlate su Supabase: {e}")
+        return []
 
 def get_saved_prompts():
     """
