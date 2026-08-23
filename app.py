@@ -172,7 +172,6 @@ st.sidebar.title("⚙️ Configurazione")
 # 1. Google API Key (senza mai esporre la chiave in .env nell'interfaccia)
 env_key = os.getenv("GOOGLE_API_KEY")
 if env_key:
-    st.sidebar.success("🟢 Google API Key caricata da .env")
     api_key_override = st.sidebar.text_input("Sovrascrivi API Key (opzionale)", type="password", help="Lascia vuoto per usare la chiave in .env")
     if api_key_override.strip():
         os.environ["GOOGLE_API_KEY"] = api_key_override.strip()
@@ -189,14 +188,9 @@ col2.metric("RPD", rpd, help="Richieste nelle ultime 24 ore")
 
 st.sidebar.divider()
 
-# 2. Selezione Modello Gemini (Default: gemini-3.5-flash-lite)
-# --- TITOLO E CONFIGURAZIONE SIDEBAR ---
-AVAILABLE_MODELS = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash"
-]
-selected_model = st.sidebar.selectbox("Scegli il modello:", AVAILABLE_MODELS, index=0)
+# Modelli Gemini configurati per l'applicazione (Default: gemini-3.5-flash-lite)
+MODEL_NOTES = "gemini-3.5-flash-lite"
+MODEL_GENERAL = "gemini-3.5-flash-lite"
 
 # --- INIZIALIZZAZIONE SESSION STATE ---
 if 'testo_estratto' not in st.session_state:
@@ -259,7 +253,7 @@ def is_latex_regen_active():
             return False
     return False
 
-def trigger_background_latex_regen(selected_model):
+def trigger_background_latex_regen(model=MODEL_GENERAL):
     if is_latex_regen_active():
         st.warning("⏳ Generazione LaTeX già in corso in background...")
         st.toast("⏳ Generazione LaTeX già in corso in background...", icon="⚠️")
@@ -281,7 +275,7 @@ def trigger_background_latex_regen(selected_model):
         except Exception as e:
             st.session_state.latex_regen_error = str(e)
             
-    t = threading.Thread(target=_worker, args=(notes_snap, selected_model), daemon=True)
+    t = threading.Thread(target=_worker, args=(notes_snap, model), daemon=True)
     add_script_run_ctx(t)
     st.session_state.latex_regen_thread = t
     t.start()
@@ -913,7 +907,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             save_current_notes_to_notion()
 
         if trigger_latex_regen:
-            trigger_background_latex_regen(selected_model)
+            trigger_background_latex_regen()
 
         # PROTEZIONE ANTI-SPARIZIONE APPUNTI: Sincronizza ed esegui il fallback sul backup protetto
         if st.session_state.get("canvas_edit_mode_toggle") and "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
@@ -1017,7 +1011,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
         # --- INIEZIONE BARRA CHAT PERSONALIZZATA STILE CHATGPT E GESTIONE PILLOLA #drag-handle-pill-native ---
         is_streaming_js = "true" if st.session_state.pending_agent_stream else "false"
-        model_badge_text = f"✨ {selected_model.replace('gemini-', 'Gemini ').replace('-', ' ').title()}"
+        model_badge_text = f"✨ {MODEL_GENERAL.replace('gemini-', 'Gemini ').replace('-', ' ').title()}"
         draggable_handle_js = f"""
         <script>
         (function() {{
@@ -1472,7 +1466,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         user_instruction=last_user_prompt,
                         chat_history=st.session_state.canvas_chat_history[:-1],
                         raw_transcript=st.session_state.testo_estratto,
-                        model_name=selected_model
+                        model_name=MODEL_GENERAL
                     )
 
                     for chunk_text in stream_gen:
@@ -1905,7 +1899,7 @@ else:
                                 st.session_state.testo_estratto = text_tr
 
                     if st.session_state.appunti_generati:
-                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
+                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=MODEL_GENERAL)
                         if success_lat:
                             st.session_state.latex_generato = latex_gen
                             st.write("✅ Codice LaTeX generato con successo dagli appunti di Notion!")
@@ -1927,7 +1921,7 @@ else:
 
                     if do_markdown_notion and st.session_state.testo_estratto:
                         status.update(label="🧠 Generazione appunti formattati con Gemini in corso...")
-                        success_gen, notes_gen = generate_notes(st.session_state.testo_estratto, custom_prompt=final_prompt, model_name=selected_model)
+                        success_gen, notes_gen = generate_notes(st.session_state.testo_estratto, custom_prompt=final_prompt, model_name=MODEL_NOTES)
                         if success_gen:
                             add_note_version(notes_gen)
                             st.write("✅ Appunti Markdown generati con successo!")
@@ -1938,7 +1932,7 @@ else:
 
                     if do_latex and st.session_state.appunti_generati:
                         status.update(label="📄 Conversione appunti in codice LaTeX in corso...")
-                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=selected_model)
+                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=MODEL_GENERAL)
                         if success_lat:
                             st.session_state.latex_generato = latex_gen
                             st.write("✅ Codice LaTeX generato con successo!")
@@ -2052,7 +2046,7 @@ else:
                                     st.rerun()
                             with btn_c2:
                                 if st.button("📄 Rigenera LaTeX", use_container_width=True, key="btn_regen_latex_standard", disabled=is_latex_regen_active()):
-                                    trigger_background_latex_regen(selected_model)
+                                    trigger_background_latex_regen()
                             with btn_c3:
                                 render_notion_save_button_tab()
 
