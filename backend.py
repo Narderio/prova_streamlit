@@ -295,12 +295,12 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
     # 1. Trova o crea il database del corso
     db_id, err = notion_helper.get_or_create_course_database(course_page_id, course_name, api_key)
     if err or not db_id:
-        return False, f"Errore preparazione tabella Notion: {err}", None
+        return False, f"{err}" if err else "Errore preparazione tabella Notion.", None
 
     # 2. Trova o crea la riga per la lezione/data
     lesson_page_id, is_existing, err_l = notion_helper.get_or_create_lesson_entry(db_id, lesson_date_str, is_same_video=is_same_video, api_key=api_key)
     if err_l or not lesson_page_id:
-        return False, f"Errore creazione riga lezione su Notion: {err_l}", None
+        return False, f"{err_l}" if err_l else "Errore creazione riga lezione su Notion.", None
 
     # 3. Trasforma il Markdown in blocchi Notion
     blocks = notion_helper.markdown_to_notion_blocks(markdown_text)
@@ -308,7 +308,7 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
     # 4. Inserisci i blocchi nella pagina Notion
     success_app, err_app = notion_helper.append_notes_to_page(lesson_page_id, blocks, is_append=is_existing, api_key=api_key)
     if not success_app:
-        return False, f"Errore scrittura blocchi su Notion: {err_app}", None
+        return False, f"{err_app}" if err_app else "Errore scrittura blocchi su Notion.", None
 
     status_msg = "Appunti accodati alla lezione del giorno su Notion!" if is_existing else "Lezione creata con successo su Notion!"
     return True, status_msg, lesson_page_id

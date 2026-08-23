@@ -1,8 +1,11 @@
 import os
 import re
+import time
+import random
 import datetime
 import concurrent.futures
 from notion_client import Client
+from notion_client.errors import APIResponseError, RequestTimeoutError, HTTPResponseError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -280,12 +283,59 @@ def rich_text_to_markdown(rich_text_list) -> str:
         
     return "".join(result)
 
+def _wrap_client_with_retry(client: Client, max_retries: int = 5) -> Client:
+    """
+    Avvolge il client Notion per gestire automaticamente i retry con exponential backoff
+    in caso di:
+    - Status 529 (Site is overloaded / sovraccarico momentaneo dei server Notion)
+    - Status 429 (Rate limit superato)
+    - Status 500/502/503/504 (Errori temporanei server o gateway)
+    - Errori di rete e timeout
+    """
+    orig_request = client.request
+
+    def retry_request(*args, **kwargs):
+        last_exception = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return orig_request(*args, **kwargs)
+            except APIResponseError as e:
+                last_exception = e
+                # Status 529 (Overloaded), 429 (Rate limit), 5xx (Gateway/Server)
+                if e.status in (529, 429, 500, 502, 503, 504) and attempt < max_retries:
+                    retry_after = 0.0
+                    try:
+                        if hasattr(e, "headers") and e.headers and "Retry-After" in e.headers:
+                            retry_after = float(e.headers.get("Retry-After", 0))
+                    except (ValueError, TypeError):
+                        pass
+
+                    backoff = retry_after if retry_after > 0 else (1.5 ** attempt) + random.uniform(0.2, 0.6)
+                    print(f"⚠️ Notion API temporaneamente sovraccarico (Status {e.status}). Tentativo {attempt}/{max_retries}, attesa {backoff:.1f}s prima di riprovare...")
+                    time.sleep(backoff)
+                else:
+                    raise e
+            except (RequestTimeoutError, HTTPResponseError, ConnectionError, TimeoutError) as e:
+                last_exception = e
+                if attempt < max_retries:
+                    backoff = (1.5 ** attempt) + random.uniform(0.2, 0.6)
+                    print(f"⚠️ Errore di connessione Notion ({type(e).__name__}). Tentativo {attempt}/{max_retries}, attesa {backoff:.1f}s...")
+                    time.sleep(backoff)
+                else:
+                    raise e
+        if last_exception:
+            raise last_exception
+
+    client.request = retry_request
+    return client
+
 def get_notion_client(api_key=None) -> Client | None:
     token = api_key or os.getenv("NOTION_API_KEY")
     if not token:
         return None
     try:
-        return Client(auth=token)
+        raw_client = Client(auth=token)
+        return _wrap_client_with_retry(raw_client)
     except Exception as e:
         print(f"Errore inizializzazione client Notion: {e}")
         return None
