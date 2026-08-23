@@ -3,10 +3,13 @@ import re
 import time
 import random
 import datetime
+import logging
 import concurrent.futures
 from notion_client import Client
 from notion_client.errors import APIResponseError, RequestTimeoutError, HTTPResponseError
 from dotenv import load_dotenv
+
+logging.getLogger("notion_client").setLevel(logging.ERROR)
 
 load_dotenv()
 
@@ -535,6 +538,85 @@ def get_or_create_course_database(course_page_id, course_name="Corso", api_key=N
         return new_db.get("id"), None
     except Exception as e:
         return None, f"Errore creazione tabella inline su Notion: {e}"
+
+def get_course_lessons(course_page_id, course_name="Corso", api_key=None) -> list:
+    """
+    Recupera l'elenco di tutte le lezioni presenti nel database Notion per il corso specificato.
+    Restituisce una lista di dizionari:
+    [
+        {
+            "id": page_id,
+            "title": title_str,
+            "date": date_iso,
+            "has_notes": bool,
+            "url": url_str,
+            "created_time": created_time
+        }, ...
+    ]
+    Ordinati in modo decrescente per data e creazione (lezione più recente prima).
+    """
+    client = get_notion_client(api_key)
+    if not client or not course_page_id:
+        return []
+
+    db_id, err = get_or_create_course_database(course_page_id, course_name, api_key)
+    if not db_id or err:
+        return []
+
+    clean_db_id = format_notion_id(db_id)
+    title_prop, checkbox_prop, date_prop = get_database_schema_props(client, clean_db_id)
+
+    try:
+        query_res = query_notion_database(client, clean_db_id)
+        results = query_res.get("results", []) if isinstance(query_res, dict) else []
+        
+        lessons = []
+        for page in results:
+            pid = page.get("id")
+            props = page.get("properties", {})
+            
+            # Titolo
+            t_list = props.get(title_prop, {}).get("title", [])
+            title_str = t_list[0].get("plain_text", "").strip() if t_list else ""
+            if not title_str:
+                title_str = f"Lezione ({pid[:6]})"
+
+            # Data
+            date_info = props.get(date_prop, {}).get("date")
+            date_iso = date_info.get("start") if date_info else None
+            if not date_iso:
+                m_date = re.search(r'(\d{2})[/.-](\d{2})[/.-](\d{4})', title_str)
+                if m_date:
+                    date_iso = f"{m_date.group(3)}-{m_date.group(2)}-{m_date.group(1)}"
+                else:
+                    created_time = page.get("created_time", "")
+                    date_iso = created_time[:10] if created_time else datetime.date.today().isoformat()
+
+            # Checkbox Appunti
+            has_notes = props.get(checkbox_prop, {}).get("checkbox", False) if checkbox_prop else False
+            
+            clean_pid = format_notion_id(pid).replace("-", "")
+            notion_url = f"https://www.notion.so/{clean_pid}"
+
+            lessons.append({
+                "id": pid,
+                "title": title_str,
+                "date": date_iso,
+                "has_notes": has_notes,
+                "url": notion_url,
+                "created_time": page.get("created_time", "")
+            })
+
+        def sort_key(item):
+            d = item.get("date") or "1970-01-01"
+            c = item.get("created_time") or ""
+            return (d, c)
+
+        lessons.sort(key=sort_key, reverse=True)
+        return lessons
+    except Exception as e:
+        print(f"Errore recupero lezioni del corso {course_name} da Notion: {e}")
+        return []
 
 def find_original_version_page(results, title_prop):
     """

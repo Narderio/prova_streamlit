@@ -152,6 +152,16 @@ def cached_get_available_courses(corsi_id, token):
     return notion_helper.get_available_courses(corsi_id, token)
 
 @st.cache_data(ttl=300, show_spinner=False)
+def cached_get_course_lessons(course_page_id, course_name, token):
+    return notion_helper.get_course_lessons(course_page_id, course_name=course_name, api_key=token)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_fetch_aggregated_transcript(video_urls_tuple):
+    if not video_urls_tuple:
+        return False, "Nessun video specificato."
+    return backend.fetch_aggregated_transcript(list(video_urls_tuple))
+
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_is_video_processed(v_id):
     return supabase_client.is_video_processed(v_id)
 
@@ -162,6 +172,27 @@ def cached_get_all_lesson_videos(video_id=None, course=None, lesson_date=None, n
 @st.cache_data(ttl=600, show_spinner=False)
 def cached_get_notion_page_markdown(page_id, token):
     return notion_helper.get_notion_page_markdown(page_id, api_key=token)
+
+def parse_date_safely(date_val, title_val=""):
+    if date_val:
+        try:
+            if isinstance(date_val, datetime.date):
+                return date_val
+            if isinstance(date_val, datetime.datetime):
+                return date_val.date()
+            parts = str(date_val).strip().split("-")
+            if len(parts) == 3:
+                return datetime.date(int(parts[0]), int(parts[1]), int(parts[2]))
+        except Exception:
+            pass
+    if title_val:
+        match = re.search(r'(\d{2})[/.-](\d{2})[/.-](\d{4})', str(title_val))
+        if match:
+            try:
+                return datetime.date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+            except Exception:
+                pass
+    return datetime.date.today()
 
 # --- INIZIO INTERFACCIA STREAMLIT ---
 st.set_page_config(page_title="Vimeo to Notion University Notes", page_icon="🎓", layout="wide")
@@ -224,8 +255,12 @@ if 'notion_save_thread' not in st.session_state:
     st.session_state.notion_save_thread = None
 if 'saved_vimeo_url' not in st.session_state:
     st.session_state.saved_vimeo_url = ""
+if 'vimeo_url_input' not in st.session_state:
+    st.session_state.vimeo_url_input = ""
 if 'saved_lesson_date' not in st.session_state:
     st.session_state.saved_lesson_date = datetime.date.today()
+if 'lesson_date_input' not in st.session_state:
+    st.session_state.lesson_date_input = datetime.date.today()
 if '_last_saved_notion_notes' not in st.session_state:
     st.session_state._last_saved_notion_notes = None
 
@@ -326,7 +361,8 @@ def save_current_notes_to_notion():
         st.toast("⏳ Salvataggio su Notion già in corso...", icon="⚠️")
         return
 
-    target_pid = st.session_state.get("current_notion_page_id")
+    # Priorità assoluta alla lezione esplicitamente selezionata / attiva
+    target_pid = st.session_state.get("_active_loaded_lesson_id") or st.session_state.get("current_notion_page_id")
     notion_token = os.getenv("NOTION_API_KEY")
     notion_corsi_id = os.getenv("NOTION_CORSI_PAGE_ID")
     
@@ -339,6 +375,7 @@ def save_current_notes_to_notion():
         db_id, _ = notion_helper.get_or_create_course_database(selected_course_page_id, selected_course, notion_token)
         target_pid, _, _ = notion_helper.get_or_create_lesson_entry(db_id, formatted_date_str, is_same_video=already_processed, api_key=notion_token)
         st.session_state.current_notion_page_id = target_pid
+        st.session_state._active_loaded_lesson_id = target_pid
 
     if target_pid:
         markdown_snapshot = str(st.session_state.appunti_generati)
@@ -1680,6 +1717,7 @@ else:
                 st.session_state.notion_page_url = None
                 st.session_state.canvas_chat_history = []
                 st.session_state._last_saved_notion_notes = None
+                st.session_state._active_loaded_lesson_id = None
                 try:
                     cached_is_video_processed.clear()
                     cached_get_all_lesson_videos.clear()
@@ -1698,41 +1736,161 @@ else:
                                 pass
                         if rec.get("course"):
                             st.session_state.selected_course_auto = rec.get("course")
+                        if rec.get("notion_page_id"):
+                            st.session_state._active_loaded_lesson_id = rec.get("notion_page_id")
 
     def update_saved_lesson_date():
         if "lesson_date_input" in st.session_state:
             st.session_state.saved_lesson_date = st.session_state.lesson_date_input
 
     with col_left:
-        url = st.text_input(
-            "Link video Vimeo",
-            value=st.session_state.saved_vimeo_url,
-            placeholder="https://vimeo.com/123456789/hash...",
-            key="vimeo_url_input",
-            on_change=update_saved_vimeo_url
-        )
-        st.session_state.saved_vimeo_url = url
-
+        # 1. Selezione Materia / Corso
         courses_dict = cached_get_available_courses(notion_corsi_id, notion_token)
         if courses_dict:
             course_names = list(courses_dict.keys())
             def_idx = 0
             if "selected_course_auto" in st.session_state and st.session_state.selected_course_auto in course_names:
                 def_idx = course_names.index(st.session_state.selected_course_auto)
-            selected_course = st.selectbox("Materia / Corso (Letto da Notion)", course_names, index=def_idx)
+            elif "selected_course" in st.session_state and st.session_state.selected_course in course_names:
+                def_idx = course_names.index(st.session_state.selected_course)
+            selected_course = st.selectbox("Materia / Corso (Letto da Notion)", course_names, index=def_idx, key="course_selector_main")
             selected_course_page_id = courses_dict[selected_course]
         else:
             st.info("💡 Nessun corso trovato o chiavi Notion non impostate nel file .env. Puoi scrivere la materia a mano:")
-            selected_course = st.text_input("Nome della materia", value="Generale")
+            selected_course = st.text_input("Nome della materia", value="Generale", key="manual_course_name")
             selected_course_page_id = notion_corsi_id
+
+        # Se il corso è cambiato rispetto all'ultimo attivo, resettiamo la lezione caricata
+        if st.session_state.get("_last_selected_course") != selected_course:
+            st.session_state._last_selected_course = selected_course
+            st.session_state._active_loaded_lesson_id = None
+            st.session_state.appunti_generati = None
+            st.session_state.testo_estratto = None
+            st.session_state.notes_versions = []
+            st.session_state.current_version_index = 0
+            st.session_state.latex_generato = None
+            st.session_state.notion_status = None
+            st.session_state.notion_page_url = None
+            st.session_state.canvas_chat_history = []
+            st.session_state._last_saved_notion_notes = None
 
         st.session_state.selected_course = selected_course
         st.session_state.selected_course_page_id = selected_course_page_id
 
+        # 2. Selettore Lezioni esistenti per la materia selezionata
+        NEW_LESSON_TAG = "✨ -- Nuova Lezione (inserisci link Vimeo) --"
+        course_lessons = []
+        if selected_course_page_id and notion_token:
+            course_lessons = cached_get_course_lessons(selected_course_page_id, selected_course, notion_token)
+
+        lesson_labels = [NEW_LESSON_TAG]
+        lesson_map = {}
+        for l in course_lessons:
+            lbl = f"📖 {l['title']}"
+            if lbl in lesson_map:
+                lbl = f"📖 {l['title']} (ID: {l['id'][:4]})"
+            lesson_labels.append(lbl)
+            lesson_map[lbl] = l
+
+        lesson_def_idx = 0
+        active_lid = st.session_state.get("_active_loaded_lesson_id")
+        if active_lid:
+            for idx_lbl, lbl_text in enumerate(lesson_labels):
+                if lbl_text in lesson_map and lesson_map[lbl_text]["id"] == active_lid:
+                    lesson_def_idx = idx_lbl
+                    break
+
+        selected_lesson_label = st.selectbox(
+            "📖 Seleziona Lezione / Appunti da caricare",
+            lesson_labels,
+            index=lesson_def_idx,
+            key=f"lesson_select_{selected_course}",
+            help="Scegli una lezione già presente su Notion per caricarne direttamente gli appunti e le relative trascrizioni video."
+        )
+
+        # Gestione cambio lezione selezionata
+        if selected_lesson_label != NEW_LESSON_TAG:
+            chosen_lesson = lesson_map.get(selected_lesson_label)
+            if chosen_lesson and chosen_lesson["id"] != st.session_state.get("_active_loaded_lesson_id"):
+                pid = chosen_lesson["id"]
+                st.session_state._active_loaded_lesson_id = pid
+                st.session_state.current_notion_page_id = pid
+                clean_pid = notion_helper.format_notion_id(pid).replace("-", "")
+                st.session_state.notion_page_url = f"https://www.notion.so/{clean_pid}"
+
+                parsed_d = parse_date_safely(chosen_lesson.get("date"), chosen_lesson.get("title"))
+                st.session_state.saved_lesson_date = parsed_d
+                safe_set_session_state("lesson_date_input", parsed_d)
+                formatted_d = parsed_d.strftime("%d/%m/%Y")
+                st.session_state.formatted_date_str = formatted_d
+
+                with st.spinner(f"Caricamento appunti e trascrizioni per '{chosen_lesson.get('title')}'..."):
+                    # 1. Carica appunti Markdown da Notion
+                    fetched_notes = cached_get_notion_page_markdown(pid, token=notion_token)
+                    if fetched_notes:
+                        st.session_state.appunti_generati = fetched_notes
+                        st.session_state._last_valid_appunti = fetched_notes
+                        st.session_state._last_saved_notion_notes = fetched_notes
+                        st.session_state.notes_versions = [fetched_notes]
+                        st.session_state.current_version_index = 0
+                        safe_set_session_state("markdown_editor_area", fetched_notes)
+                        safe_set_session_state("markdown_editor_area_canvas", fetched_notes)
+
+                    # 2. Carica e aggrega tutte le trascrizioni dei video associati alla lezione
+                    all_videos = cached_get_all_lesson_videos(
+                        course=selected_course,
+                        lesson_date=chosen_lesson.get("date") or formatted_d,
+                        notion_page_id=pid
+                    )
+                    video_urls = [v.get("url") for v in all_videos if v.get("url")]
+                    if video_urls:
+                        success_tr, agg_tr = cached_fetch_aggregated_transcript(tuple(video_urls))
+                        if success_tr:
+                            st.session_state.testo_estratto = agg_tr
+                        else:
+                            st.session_state.testo_estratto = None
+                        if video_urls[0]:
+                            st.session_state.saved_vimeo_url = video_urls[0]
+                            safe_set_session_state("vimeo_url_input", video_urls[0])
+                    else:
+                        st.session_state.testo_estratto = None
+
+                st.session_state.latex_generato = None
+                st.session_state.canvas_chat_history = []
+                num_vids = len(video_urls) if video_urls else 0
+                vid_info = f" ({num_vids} parti video trascritte)" if num_vids > 1 else (" (1 video trascritto)" if num_vids == 1 else "")
+                st.session_state.notion_status = f"💡 Appunti e trascrizioni della '{chosen_lesson.get('title')}' caricati con successo da Notion{vid_info}!"
+                st.toast(f"✅ Appunti e trascrizioni di '{chosen_lesson.get('title')}' caricati!", icon="📚")
+                st.rerun()
+
+        elif selected_lesson_label == NEW_LESSON_TAG and st.session_state.get("_active_loaded_lesson_id") is not None:
+            st.session_state._active_loaded_lesson_id = None
+            st.session_state.current_notion_page_id = None
+            st.session_state.notion_page_url = None
+            st.session_state.appunti_generati = None
+            st.session_state.testo_estratto = None
+            st.session_state.notes_versions = []
+            st.session_state.current_version_index = 0
+            st.session_state.latex_generato = None
+            st.session_state.notion_status = None
+            st.session_state.canvas_chat_history = []
+            st.session_state._last_saved_notion_notes = None
+            st.session_state.saved_vimeo_url = ""
+            safe_set_session_state("vimeo_url_input", "")
+            st.rerun()
+
+        # 3. Link video Vimeo
+        url = st.text_input(
+            "Link video Vimeo",
+            placeholder="https://vimeo.com/123456789/hash...",
+            key="vimeo_url_input",
+            on_change=update_saved_vimeo_url
+        )
+        st.session_state.saved_vimeo_url = url
+
     with col_right:
         lesson_date = st.date_input(
             "Data della lezione",
-            value=st.session_state.saved_lesson_date,
             key="lesson_date_input",
             on_change=update_saved_lesson_date
         )
@@ -1740,6 +1898,20 @@ else:
         formatted_date_str = lesson_date.strftime("%d/%m/%Y")
         st.caption(f"Etichetta Lezione: **Lezione {formatted_date_str}**")
         st.session_state.formatted_date_str = formatted_date_str
+
+        # Se una lezione è attualmente caricata da Notion, mostriamo il badge e il link diretto
+        if st.session_state.get("_active_loaded_lesson_id") and st.session_state.get("notion_page_url"):
+            st.markdown(
+                """
+                <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-top: 10px;">
+                    <div style="color: #60a5fa; font-weight: 600; font-size: 13px; margin-bottom: 4px;">📖 Lezione Caricata da Notion</div>
+                    <div style="color: #94a3b8; font-size: 12px;">Appunti e trascrizioni pronti per lo studio e la modifica.</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.write("")
+            st.link_button("📖 Apri Lezione su Notion", st.session_state.notion_page_url, use_container_width=True)
 
     video_id_preview, _ = extract_vimeo_ids(url) if url else (None, None)
     already_processed = False
@@ -1751,13 +1923,16 @@ else:
         if is_proc:
             already_processed = True
             saved_page_id = record.get("notion_page_id")
-            if saved_page_id:
-                st.session_state.current_notion_page_id = saved_page_id
-                clean_pid = notion_helper.format_notion_id(saved_page_id).replace("-", "")
-                existing_notion_url = f"https://www.notion.so/{clean_pid}"
-            elif selected_course_page_id:
-                clean_pid = notion_helper.format_notion_id(selected_course_page_id).replace("-", "")
-                existing_notion_url = f"https://www.notion.so/{clean_pid}"
+            if not st.session_state.get("_active_loaded_lesson_id"):
+                if saved_page_id:
+                    st.session_state.current_notion_page_id = saved_page_id
+                    clean_pid = notion_helper.format_notion_id(saved_page_id).replace("-", "")
+                    existing_notion_url = f"https://www.notion.so/{clean_pid}"
+                elif selected_course_page_id:
+                    clean_pid = notion_helper.format_notion_id(selected_course_page_id).replace("-", "")
+                    existing_notion_url = f"https://www.notion.so/{clean_pid}"
+            else:
+                existing_notion_url = st.session_state.get("notion_page_url")
 
     st.session_state.already_processed = already_processed
 
@@ -1850,7 +2025,7 @@ else:
             on_change=sync_latex_reprocess_checkboxes
         )
 
-        if saved_page_id and not force_reprocess and not st.session_state.appunti_generati:
+        if saved_page_id and not force_reprocess and not st.session_state.appunti_generati and not st.session_state.get("_active_loaded_lesson_id"):
             with st.spinner("Recupero appunti e trascrizioni in corso..."):
                 fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
                 if fetched_notes:
@@ -1974,16 +2149,28 @@ else:
                             st.error(f"Errore LaTeX: {latex_gen}")
 
                     if do_markdown_notion and st.session_state.appunti_generati and notion_token and selected_course_page_id:
-                        status.update(label="📤 Creazione riga ed esportazione appunti su Notion...")
+                        status.update(label="📤 Salvataggio ed esportazione appunti su Notion...")
                         v_id, _ = extract_vimeo_ids(url)
-                        success_notion, msg_notion, notion_page_id = export_to_notion(
-                            course_name=selected_course,
-                            course_page_id=selected_course_page_id,
-                            lesson_date_str=formatted_date_str,
-                            markdown_text=st.session_state.appunti_generati,
-                            is_same_video=already_processed,
-                            api_key=notion_token
-                        )
+                        active_target_pid = st.session_state.get("current_notion_page_id")
+                        
+                        # Se è stata caricata una specifica pagina Notion e non è stato richiesto di forzare una nuova versione:
+                        if active_target_pid and not force_reprocess:
+                            success_notion, err_upd = notion_helper.update_notion_page_in_place(
+                                active_target_pid,
+                                st.session_state.appunti_generati,
+                                api_key=notion_token
+                            )
+                            msg_notion = "Pagina Notion aggiornata con successo!" if success_notion else (err_upd or "Errore aggiornamento Notion")
+                            notion_page_id = active_target_pid if success_notion else None
+                        else:
+                            success_notion, msg_notion, notion_page_id = export_to_notion(
+                                course_name=selected_course,
+                                course_page_id=selected_course_page_id,
+                                lesson_date_str=formatted_date_str,
+                                markdown_text=st.session_state.appunti_generati,
+                                is_same_video=already_processed,
+                                api_key=notion_token
+                            )
 
                         if not success_notion:
                             st.warning(f"⚠️ Avviso Notion: {msg_notion}")

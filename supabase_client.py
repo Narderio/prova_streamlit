@@ -116,14 +116,16 @@ def get_all_lesson_videos(video_id: str = None, course: str = None, lesson_date:
         # 1. Cerca per notion_page_id se disponibile
         if target_page_id and str(target_page_id).strip():
             res_p = client.table("processed_lessons").select("*").eq("notion_page_id", str(target_page_id)).order("created_at", desc=False).execute()
-            if res_p.data:
+            if res_p.data and len(res_p.data) > 0:
                 for r in res_p.data:
                     vid = r.get("video_id")
                     if vid and vid not in seen_ids:
                         results.append(r)
                         seen_ids.add(vid)
+                if results:
+                    return results
 
-        # 2. Cerca per (course, lesson_date) per includere eventuali video della stessa giornata
+        # 2. Fallback: cerca per (course, lesson_date) se target_page_id non ha prodotto risultati
         if target_course and target_date:
             iso_date = format_iso_date(target_date)
             res_cd = client.table("processed_lessons").select("*").eq("course", str(target_course)).eq("lesson_date", iso_date).order("created_at", desc=False).execute()
