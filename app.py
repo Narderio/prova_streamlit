@@ -226,6 +226,24 @@ if 'saved_vimeo_url' not in st.session_state:
     st.session_state.saved_vimeo_url = ""
 if 'saved_lesson_date' not in st.session_state:
     st.session_state.saved_lesson_date = datetime.date.today()
+if '_last_saved_notion_notes' not in st.session_state:
+    st.session_state._last_saved_notion_notes = None
+
+def normalize_markdown_for_comparison(text):
+    if text is None:
+        return ""
+    return str(text).replace("\r\n", "\n").strip()
+
+def check_has_unsaved_changes():
+    curr_notes = st.session_state.get("appunti_generati")
+    if not curr_notes or not str(curr_notes).strip():
+        return False
+    
+    last_saved = st.session_state.get("_last_saved_notion_notes")
+    if last_saved is None:
+        return True
+    
+    return normalize_markdown_for_comparison(curr_notes) != normalize_markdown_for_comparison(last_saved)
 
 # --- FUNZIONE DI VERIFICA LOCK NOTION ---
 def is_notion_saving_active():
@@ -324,6 +342,7 @@ def save_current_notes_to_notion():
 
     if target_pid:
         markdown_snapshot = str(st.session_state.appunti_generati)
+        st.session_state._last_saved_notion_notes = markdown_snapshot
         bg_thread = threading.Thread(
             target=notion_helper.update_notion_page_in_place,
             args=(target_pid, markdown_snapshot, notion_token),
@@ -358,7 +377,8 @@ def render_notion_save_button_tab():
     if is_notion_saving_active():
         st.button("⏳ Salvataggio Notion...", disabled=True, key="btn_save_edited_notion_dis", use_container_width=True)
     else:
-        if st.button("📤 Salva su Notion", use_container_width=True, key="btn_save_edited_notion"):
+        btn_type = "primary" if check_has_unsaved_changes() else "secondary"
+        if st.button("📤 Salva su Notion", type=btn_type, use_container_width=True, key="btn_save_edited_notion"):
             save_current_notes_to_notion()
 
 if 'canvas_ratio_mode' not in st.session_state:
@@ -897,7 +917,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         with b2:
             trigger_latex_regen = st.button("📄", help="Rigenera LaTeX in background", key="btn_regen_latex_canvas", disabled=is_latex_active)
         with b3:
-            trigger_notion_save = st.button("📤", help="Salva su Notion", key="btn_save_notion_icon")
+            has_unsaved_canvas = check_has_unsaved_changes()
+            help_notion = "⚠️ Salva su Notion (Modifiche non salvate)" if has_unsaved_canvas else "Salva su Notion"
+            trigger_notion_save = st.button("📤", help=help_notion, key="btn_save_notion_icon")
         with b4:
             trigger_back = st.button("🔙", help="Torna al Form", key="btn_close_canvas_icon")
 
@@ -926,6 +948,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
         # NOTIFICA CONTINUA ANIMATA PER OPERAZIONI IN BACKGROUND (NOTION & LATEX)
         render_active_background_operations_banner()
+
+        if check_has_unsaved_changes():
+            st.warning("⚠️ **Modifiche non salvate**: ricordati di salvare gli appunti su Notion (icona 📤 in alto a destra) per non perdere le modifiche.")
 
         if st.session_state.latex_generato:
             tab_canvas_md, tab_canvas_lat = st.tabs(["📚 Appunti (Markdown)", "📄 Codice LaTeX"])
@@ -1523,7 +1548,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
                             st.session_state.notes_versions[target_idx] = cleaned_canvas
                         switch_note_version(target_idx)
-                        st.toast(f"⚡ Canvas aggiornato alla Versione {target_idx + 1}!", icon="✅")
+                        st.toast(f"⚡ Canvas aggiornato alla Versione {target_idx + 1}! Ricordati di salvare su Notion.", icon="⚠️")
                     else:
                         if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
                             st.session_state.notes_versions.pop()
@@ -1654,6 +1679,7 @@ else:
                 st.session_state.notion_status = None
                 st.session_state.notion_page_url = None
                 st.session_state.canvas_chat_history = []
+                st.session_state._last_saved_notion_notes = None
                 try:
                     cached_is_video_processed.clear()
                     cached_get_all_lesson_videos.clear()
@@ -1829,6 +1855,7 @@ else:
                 fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
                 if fetched_notes:
                     add_note_version(fetched_notes)
+                    st.session_state._last_saved_notion_notes = fetched_notes
                     st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
                     st.session_state.notion_page_url = existing_notion_url
                     
@@ -1875,6 +1902,7 @@ else:
                 st.session_state.notion_status = None
                 st.session_state.notion_page_url = None
                 st.session_state.canvas_chat_history = []
+                st.session_state._last_saved_notion_notes = None
 
             with st.status("🚀 Avvio elaborazione...", expanded=True) as status:
                 if already_processed and not force_reprocess and do_latex:
@@ -1883,6 +1911,7 @@ else:
                         fetched_notes = cached_get_notion_page_markdown(saved_page_id, token=notion_token)
                         if fetched_notes:
                             add_note_version(fetched_notes)
+                            st.session_state._last_saved_notion_notes = fetched_notes
                             
                     if not st.session_state.testo_estratto:
                         status.update(label="📄 Caricamento appunti da Notion ed estrazione trascrizioni in corso...")
@@ -1963,6 +1992,7 @@ else:
                             st.session_state.current_notion_page_id = notion_page_id
                             st.session_state.notion_status = f"✅ {msg_notion}"
                             st.write(f"✅ {msg_notion}")
+                            st.session_state._last_saved_notion_notes = st.session_state.appunti_generati
 
                             if notion_page_id:
                                 clean_pid = notion_helper.format_notion_id(notion_page_id).replace("-", "")
@@ -1979,6 +2009,7 @@ else:
                                 try:
                                     cached_is_video_processed.clear()
                                     cached_get_all_lesson_videos.clear()
+                                    cached_get_notion_page_markdown.clear()
                                 except Exception:
                                     pass
 
@@ -1989,6 +2020,7 @@ else:
                                 if full_notes:
                                     st.session_state.appunti_generati = full_notes
                                     st.session_state._last_valid_appunti = full_notes
+                                    st.session_state._last_saved_notion_notes = full_notes
                                     if len(st.session_state.notes_versions) > 0:
                                         st.session_state.notes_versions[st.session_state.current_version_index] = full_notes
                                     else:
@@ -2056,6 +2088,9 @@ else:
                                 render_notion_save_button_tab()
 
                         st.divider()
+
+                        if check_has_unsaved_changes():
+                            st.warning("⚠️ **Modifiche non salvate**: hai modificato gli appunti. Ricordati di salvarli su Notion (pulsante **📤 Salva su Notion**) per non perdere le modifiche.")
 
                         if view_mode == "✏️ Modifica Markdown":
                             edited_text = st.text_area(
