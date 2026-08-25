@@ -423,6 +423,270 @@ if 'canvas_ratio_mode' not in st.session_state:
 if 'canvas_width_pct' not in st.session_state:
     st.session_state.canvas_width_pct = 55
 
+# --- SCRIPT JAVASCRIPT UNIVERSALE PER INSERIMENTO IMMAGINI (CTRL+V e DRAG & DROP) ---
+def generate_image_paste_drop_js():
+    """
+    Genera lo script JavaScript per intercettare Ctrl+V (paste) e Drag & Drop
+    di immagini sulle textarea Streamlit degli appunti (Home e Canvas).
+    Supporta l'upload in background anche dalla modalità anteprima usando un widget nascosto.
+    """
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    supabase_key = os.getenv("SUPABASE_KEY", "")
+    
+    if not supabase_url or not supabase_key:
+        return ""
+    
+    return f"""
+    <script>
+    (function() {{
+        const pDoc = window.parent.document;
+        const pWin = pDoc.defaultView || window.parent;
+        const SUPABASE_URL = '{supabase_url}';
+        const SUPABASE_KEY = '{supabase_key}';
+        const BUCKET = 'canvas-images';
+
+        if (pWin.__imagePasteDropInitialized) return;
+        pWin.__imagePasteDropInitialized = true;
+
+        function uuid4() {{
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {{
+                var r = Math.random() * 16 | 0;
+                return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+            }});
+        }}
+
+        function compressImageToWebP(file, maxWidth, quality) {{
+            maxWidth = maxWidth || 1920;
+            quality = quality || 0.82;
+            return new Promise(function(resolve, reject) {{
+                var reader = new FileReader();
+                reader.onload = function(e) {{
+                    var img = new Image();
+                    img.onload = function() {{
+                        var canvas = pDoc.createElement('canvas');
+                        var w = img.width;
+                        var h = img.height;
+                        if (w > maxWidth) {{
+                            h = Math.round(h * maxWidth / w);
+                            w = maxWidth;
+                        }}
+                        canvas.width = w;
+                        canvas.height = h;
+                        var ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, w, h);
+                        canvas.toBlob(function(blob) {{
+                            if (blob) {{
+                                resolve(blob);
+                            }} else {{
+                                resolve(file);
+                            }}
+                        }}, 'image/webp', quality);
+                    }};
+                    img.onerror = function() {{ reject(new Error('Errore caricamento immagine')); }};
+                    img.src = e.target.result;
+                }};
+                reader.onerror = function() {{ reject(new Error('Errore lettura file')); }};
+                reader.readAsDataURL(file);
+            }});
+        }}
+
+        function uploadToSupabase(blob, filename) {{
+            var filePath = 'images/' + filename;
+            var uploadUrl = SUPABASE_URL + '/storage/v1/object/' + BUCKET + '/' + filePath;
+
+            return fetch(uploadUrl, {{
+                method: 'POST',
+                headers: {{
+                    'Authorization': 'Bearer ' + SUPABASE_KEY,
+                    'apikey': SUPABASE_KEY,
+                    'Content-Type': blob.type || 'image/webp',
+                    'Cache-Control': 'public, max-age=31536000, immutable'
+                }},
+                body: blob
+            }}).then(function(res) {{
+                if (!res.ok) {{
+                    return res.text().then(function(t) {{ throw new Error('Upload fallito: ' + t); }});
+                }}
+                var publicUrl = SUPABASE_URL + '/storage/v1/object/public/' + BUCKET + '/' + filePath;
+                return publicUrl;
+            }});
+        }}
+
+        function showUploadIndicator(show) {{
+            var indicator = pDoc.getElementById('img-upload-indicator');
+            if (show) {{
+                if (!indicator) {{
+                    indicator = pDoc.createElement('div');
+                    indicator.id = 'img-upload-indicator';
+                    indicator.innerHTML = '<div style="position:fixed;bottom:80px;right:25px;z-index:999999999;background:rgba(15,23,42,0.95);backdrop-filter:blur(10px);border:1px solid #3b82f6;border-radius:12px;padding:12px 20px;box-shadow:0 10px 30px rgba(0,0,0,0.6);display:flex;align-items:center;gap:10px;animation:slide-in-notification 0.3s ease-out;"><div style="width:18px;height:18px;border:2.5px solid #3b82f6;border-top-color:transparent;border-radius:50%;animation:spin-upload 0.8s linear infinite;"></div><span style="color:#60a5fa;font-size:13px;font-weight:600;">Caricamento immagine...</span></div><style>@keyframes spin-upload{{0%{{transform:rotate(0deg)}}100%{{transform:rotate(360deg)}}}}</style>';
+                    pDoc.body.appendChild(indicator);
+                }}
+                indicator.style.display = 'block';
+            }} else {{
+                if (indicator) indicator.style.display = 'none';
+            }}
+        }}
+
+        function showUploadToast(success, message) {{
+            var toast = pDoc.createElement('div');
+            var bg = success ? 'rgba(16,185,129,0.95)' : 'rgba(239,68,68,0.95)';
+            var icon = success ? '✅' : '❌';
+            if (!success && message.includes("Modalità Modifica")) {{
+                icon = '⚠️';
+                bg = 'rgba(245,158,11,0.95)'; // arancione/giallo per warning
+            }}
+            toast.innerHTML = '<div style="position:fixed;bottom:80px;right:25px;z-index:999999999;background:' + bg + ';backdrop-filter:blur(10px);border-radius:12px;padding:12px 20px;box-shadow:0 10px 30px rgba(0,0,0,0.6);color:#ffffff;font-size:13px;font-weight:600;animation:slide-in-notification 0.3s ease-out;">' + icon + ' ' + message + '</div>';
+            pDoc.body.appendChild(toast);
+            setTimeout(function() {{ toast.remove(); }}, 3500);
+        }}
+
+        function findTargetTextarea(eventTarget) {{
+            if (eventTarget && eventTarget.tagName === 'TEXTAREA') return eventTarget;
+            
+            var textareas = pDoc.querySelectorAll('textarea');
+            for (var i = 0; i < textareas.length; i++) {{
+                var label = textareas[i].getAttribute('aria-label') || '';
+                
+                // Ignora la chat input!
+                if (label.indexOf('Assistente AI') !== -1 || label.indexOf('Chiedi') !== -1) {{
+                    continue;
+                }}
+                
+                // Match preciso sulle textarea degli appunti (Home e Canvas)
+                if (label.indexOf('Modifica direttamente il testo') !== -1 || label.indexOf('Modifica liberamente il testo') !== -1) {{
+                    return textareas[i];
+                }}
+            }}
+            return null; 
+        }}
+
+        function insertTextAtCursor(textarea, textToInsert) {{
+            if (!textarea) return;
+            
+            try {{ textarea.focus(); }} catch(e) {{}}
+            
+            var start = textarea.selectionStart || 0;
+            var end = textarea.selectionEnd || 0;
+            var currentVal = textarea.value || '';
+
+            var prefix = '\\n\\n';
+            var suffix = '\\n\\n';
+
+            var newValue = currentVal.substring(0, start) + prefix + textToInsert + suffix + currentVal.substring(end);
+
+            var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                pWin.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            nativeInputValueSetter.call(textarea, newValue);
+
+            textarea.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
+            textarea.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
+            
+            var newCursorPos = start + prefix.length + textToInsert.length + suffix.length;
+            textarea.selectionStart = newCursorPos;
+            textarea.selectionEnd = newCursorPos;
+            
+            // Ripristina semplicemente il focus sulla textarea senza forzare il blur
+            try {{ textarea.focus(); }} catch(e) {{}}
+        }}
+
+        function processImageFile(file, targetTextarea) {{
+            if (!file || !file.type.startsWith('image/')) return;
+            
+            if (!targetTextarea) {{
+                showUploadToast(false, 'Passa in Modalità Modifica per inserire immagini!');
+                return;
+            }}
+            
+            showUploadIndicator(true);
+            
+            compressImageToWebP(file, 1920, 0.82).then(function(compressedBlob) {{
+                var filename = uuid4().replace(/-/g, '') + '.webp';
+                return uploadToSupabase(compressedBlob, filename);
+            }}).then(function(publicUrl) {{
+                showUploadIndicator(false);
+                var markdownTag = '![Immagine](' + publicUrl + ')';
+                insertTextAtCursor(targetTextarea, markdownTag);
+                showUploadToast(true, 'Immagine inserita!');
+            }}).catch(function(err) {{
+                showUploadIndicator(false);
+                console.error('Errore upload immagine:', err);
+                showUploadToast(false, 'Errore caricamento: ' + err.message);
+            }});
+        }}
+
+        pDoc.addEventListener('paste', function(e) {{
+            var items = (e.clipboardData || e.originalEvent.clipboardData || {{}}).items;
+            if (!items) return;
+            
+            for (var i = 0; i < items.length; i++) {{
+                if (items[i].type.indexOf('image') !== -1) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var file = items[i].getAsFile();
+                    var textarea = findTargetTextarea(e.target);
+                    processImageFile(file, textarea);
+                    return;
+                }}
+            }}
+        }}, true);
+
+        // Funzione globale per bloccare il drag and drop del browser
+        function preventDefaults(e) {{
+            e.preventDefault();
+            e.stopPropagation();
+        }}
+
+        // Blocchiamo gli eventi su ogni possibile livello
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {{
+            pDoc.addEventListener(eventName, preventDefaults, false);
+            pWin.addEventListener(eventName, preventDefaults, false);
+            pDoc.body.addEventListener(eventName, preventDefaults, false);
+        }});
+
+        // Gestione effettiva del drop (in capture phase)
+        pDoc.addEventListener('drop', function(e) {{
+            preventDefaults(e);
+            
+            if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+            
+            var file = e.dataTransfer.files[0];
+            if (!file.type.startsWith('image/')) return;
+
+            var textarea = null;
+            if (e.target && e.target.tagName === 'TEXTAREA') {{
+                textarea = e.target;
+                if (pDoc.caretPositionFromPoint) {{
+                    var pos = pDoc.caretPositionFromPoint(e.clientX, e.clientY);
+                    if (pos && pos.offsetNode === textarea) {{
+                        textarea.selectionStart = pos.offset;
+                        textarea.selectionEnd = pos.offset;
+                    }}
+                }} else if (pDoc.caretRangeFromPoint) {{
+                    var range = pDoc.caretRangeFromPoint(e.clientX, e.clientY);
+                    if (range) {{
+                        textarea.selectionStart = range.startOffset;
+                        textarea.selectionEnd = range.startOffset;
+                    }}
+                }}
+            }} else {{
+                textarea = findTargetTextarea(e.target);
+            }}
+            
+            processImageFile(file, textarea);
+        }}, true);
+
+        console.log('[ImagePasteDrop] Inizializzato. Ricevitore attivo solo in modalità Modifica.');
+    }})();
+    </script>
+    """
+
+def inject_image_paste_drop_js():
+    js_html = generate_image_paste_drop_js()
+    if js_html:
+        st.iframe(js_html, height=1)
+
+
 # --- FRAGMENT NOTIFICA TOAST FLUTTUANTE CON BARRA DI CARICAMENTO ---
 @st.fragment(run_every="1s")
 def render_active_background_operations_banner():
@@ -962,6 +1226,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
         if trigger_edit_toggle:
             st.session_state.canvas_edit_mode_toggle = not st.session_state.canvas_edit_mode_toggle
+            if st.session_state.canvas_edit_mode_toggle:
+                if "markdown_editor_area_canvas" in st.session_state:
+                    del st.session_state["markdown_editor_area_canvas"]
             st.rerun()
         if trigger_back:
             st.session_state.show_canvas_chat = False
@@ -972,10 +1239,6 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
         if trigger_latex_regen:
             trigger_background_latex_regen()
-
-        # PROTEZIONE ANTI-SPARIZIONE APPUNTI: Sincronizza ed esegui il fallback sul backup protetto
-        if st.session_state.get("canvas_edit_mode_toggle") and "markdown_editor_area_canvas" in st.session_state and st.session_state.markdown_editor_area_canvas:
-            st.session_state.appunti_generati = st.session_state.markdown_editor_area_canvas
 
         if (not st.session_state.appunti_generati or not str(st.session_state.appunti_generati).strip()) and st.session_state.get("_last_valid_appunti"):
             st.session_state.appunti_generati = st.session_state._last_valid_appunti
@@ -1493,6 +1756,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         </script>
         """
         st.iframe(draggable_handle_js, height=1)
+        
+        # Iniezione script JavaScript per Ctrl+V e Drag & Drop immagini (Canvas)
+        inject_image_paste_drop_js()
 
         # Flag streaming nascosto DENTRO col_chat, renderizzato PRIMA del blocco streaming
         _streaming_flag_val = "true" if st.session_state.pending_agent_stream else "false"
@@ -2293,6 +2559,9 @@ else:
                             st.markdown(cleaned_render)
 
                         st.divider()
+                        
+                        # Iniezione script JavaScript per Ctrl+V e Drag & Drop immagini (Home Page)
+                        inject_image_paste_drop_js()
 
                         c1, c2 = st.columns([1, 4])
                         with c1:

@@ -336,6 +336,11 @@ REGOLE TASSATIVE E INVIOLABILI:
    - Se la trascrizione grezza contiene più parti (es. PARTE 1, PARTE 2), significa che la lezione del giorno è composta da più video/integrazioni.
    - Utilizza l'insieme di tutte le parti della trascrizione e degli appunti per rispondere con la massima precisione ed accuratezza.
 
+4. PRESERVAZIONE TASSATIVA DELLE IMMAGINI E DEI MEDIA:
+   - Se il documento Canvas contiene tag immagine del tipo `![...](URL)` o `![Immagine](https://...)`, DEVI ASSOLUTAMENTE mantenerli intatti e posizionati esattamente nello stesso identico punto contestuale in cui si trovano originariamente.
+   - È SEVERAMENTE VIETATO rimuovere, omettere, spostare arbitrariamente o alterare gli URL dei tag immagine quando riscrivi, sintetizzi, espandi, formatti o aggiorni il Canvas sotto <<<UPDATED_CANVAS>>>.
+   - Le immagini sono parte integrante del materiale didattico e devono essere sempre preservate nella loro posizione originale rispetto al testo circostante.
+
 FORMATO DI RISPOSTA TASSATIVO ED OBBLIGATORIO:
 <<<CHAT_RESPONSE>>>
 [Risposta conversazionale, spiegazioni dei concetti per lo studio o descrizione di cosa hai modificato]

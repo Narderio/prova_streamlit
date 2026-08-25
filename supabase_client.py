@@ -172,3 +172,109 @@ def save_prompt(title: str, prompt_text: str, is_default: bool = False):
         return True, res.data
     except Exception as e:
         return False, f"Errore salvataggio prompt su Supabase: {e}"
+
+
+# --- FUNZIONI UPLOAD IMMAGINI PER CANVAS ---
+
+import uuid
+import base64
+
+CANVAS_IMAGES_BUCKET = "canvas-images"
+
+def ensure_canvas_images_bucket():
+    """
+    Verifica che il bucket 'canvas-images' esista su Supabase Storage.
+    Se non esiste, tenta di crearlo come bucket pubblico.
+    Restituisce True se il bucket è pronto, False altrimenti.
+    """
+    client = get_supabase_client()
+    if not client:
+        return False
+    try:
+        # Prova a recuperare le info del bucket
+        client.storage.get_bucket(CANVAS_IMAGES_BUCKET)
+        return True
+    except Exception:
+        pass
+    try:
+        # Crea il bucket come pubblico
+        client.storage.create_bucket(
+            CANVAS_IMAGES_BUCKET,
+            options={"public": True}
+        )
+        return True
+    except Exception as e:
+        print(f"Errore creazione bucket '{CANVAS_IMAGES_BUCKET}': {e}")
+        return False
+
+def upload_canvas_image(file_bytes: bytes, filename: str, content_type: str = "image/webp"):
+    """
+    Carica un'immagine (bytes) nel bucket 'canvas-images' di Supabase Storage.
+    Genera un nome file unico basato su UUID per evitare collisioni.
+    Restituisce (True, public_url) in caso di successo, (False, errore) altrimenti.
+    """
+    client = get_supabase_client()
+    if not client:
+        return False, "Credenziali Supabase mancanti."
+    
+    try:
+        ensure_canvas_images_bucket()
+        
+        # Genera nome file unico con UUID
+        ext = filename.rsplit(".", 1)[-1] if "." in filename else "webp"
+        unique_filename = f"{uuid.uuid4().hex}.{ext}"
+        file_path = f"images/{unique_filename}"
+        
+        # Upload del file
+        client.storage.from_(CANVAS_IMAGES_BUCKET).upload(
+            path=file_path,
+            file=file_bytes,
+            file_options={
+                "content-type": content_type,
+                "cache-control": "public, max-age=31536000, immutable"
+            }
+        )
+        
+        # Genera URL pubblico
+        public_url = client.storage.from_(CANVAS_IMAGES_BUCKET).get_public_url(file_path)
+        return True, public_url
+    except Exception as e:
+        print(f"Errore upload immagine su Supabase Storage: {e}")
+        return False, f"Errore upload immagine: {e}"
+
+def upload_canvas_image_base64(base64_data: str, filename: str = None):
+    """
+    Carica un'immagine codificata in Base64 nel bucket 'canvas-images' di Supabase Storage.
+    Accetta sia dati Base64 puri che data URI (es. 'data:image/png;base64,...').
+    Restituisce (True, public_url) in caso di successo, (False, errore) altrimenti.
+    """
+    try:
+        # Estrai content type e dati puri dal data URI se presente
+        content_type = "image/webp"
+        pure_base64 = base64_data
+        
+        if base64_data.startswith("data:"):
+            # Formato: data:image/png;base64,iVBOR...
+            header, pure_base64 = base64_data.split(",", 1)
+            if "image/" in header:
+                content_type = header.split(":")[1].split(";")[0]
+        
+        file_bytes = base64.b64decode(pure_base64)
+        
+        # Determina estensione dal content type
+        ext_map = {
+            "image/webp": "webp",
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/gif": "gif",
+            "image/svg+xml": "svg"
+        }
+        ext = ext_map.get(content_type, "webp")
+        
+        if not filename:
+            filename = f"clipboard_{uuid.uuid4().hex[:8]}.{ext}"
+        
+        return upload_canvas_image(file_bytes, filename, content_type)
+    except Exception as e:
+        print(f"Errore decodifica/upload immagine Base64: {e}")
+        return False, f"Errore decodifica immagine: {e}"

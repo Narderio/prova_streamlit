@@ -716,6 +716,19 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
                     print(f"Avviso lettura tabella Notion: {e_tbl}")
             elif b_type == "divider":
                 lines.append("---")
+            elif b_type == "image":
+                # Blocco immagine nativo di Notion -> Markdown ![caption](url)
+                img_data = block.get("image", {})
+                img_type = img_data.get("type", "")
+                img_url = ""
+                if img_type == "external":
+                    img_url = img_data.get("external", {}).get("url", "")
+                elif img_type == "file":
+                    img_url = img_data.get("file", {}).get("url", "")
+                if img_url:
+                    caption_rt = img_data.get("caption", [])
+                    caption_text = rich_text_to_markdown(caption_rt) if caption_rt else "Immagine"
+                    lines.append(f"![{caption_text}]({img_url})")
                 
         raw_markdown = "\n\n".join(lines)
         return clean_markdown_for_streamlit(raw_markdown)
@@ -1032,6 +1045,24 @@ def markdown_to_notion_blocks(markdown_text: str):
             continue
 
         if not stripped:
+            idx += 1
+            continue
+
+        # 3.5 Immagini Markdown ![alt](url)
+        img_match = re.match(r'^!\[([^\]]*)\]\(([^)]+)\)$', stripped)
+        if img_match:
+            alt_text = img_match.group(1) or "Immagine"
+            img_url = img_match.group(2)
+            caption_rt = [{"type": "text", "text": {"content": alt_text}}] if alt_text and alt_text != "Immagine" else []
+            blocks.append({
+                "object": "block",
+                "type": "image",
+                "image": {
+                    "type": "external",
+                    "external": {"url": img_url},
+                    "caption": caption_rt
+                }
+            })
             idx += 1
             continue
 
