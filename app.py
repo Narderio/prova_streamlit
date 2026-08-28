@@ -423,12 +423,52 @@ if 'canvas_ratio_mode' not in st.session_state:
 if 'canvas_width_pct' not in st.session_state:
     st.session_state.canvas_width_pct = 55
 
-# --- SCRIPT JAVASCRIPT UNIVERSALE PER INSERIMENTO IMMAGINI (CTRL+V e DRAG & DROP) ---
+# --- SCRIPT JAVASCRIPT UNIVERSALE PER INSERIMENTO E RIDIMENSIONAMENTO IMMAGINI (DRAG-TO-RESIZE) ---
+def handle_notes_sync_bridge():
+    new_val = st.session_state.get("notes_sync_bridge_input", "")
+    if new_val and new_val.strip() and new_val != st.session_state.get("appunti_generati"):
+        st.session_state.appunti_generati = new_val
+        st.session_state._last_valid_appunti = new_val
+        if "markdown_editor_area_canvas" in st.session_state:
+            st.session_state.markdown_editor_area_canvas = new_val
+        if "markdown_editor_area" in st.session_state:
+            st.session_state.markdown_editor_area = new_val
+        cur_idx = st.session_state.get("current_version_index", 0)
+        if "notes_versions" in st.session_state and 0 <= cur_idx < len(st.session_state.notes_versions):
+            st.session_state.notes_versions[cur_idx] = new_val
+
+def render_notes_sync_bridge():
+    st.markdown("""
+    <style>
+    div[data-testid="stTextArea"]:has(textarea[aria-label="__notes_sync_bridge__"]),
+    div:has(> textarea[aria-label="__notes_sync_bridge__"]),
+    div[data-testid="element-container"]:has(textarea[aria-label="__notes_sync_bridge__"]),
+    textarea[aria-label="__notes_sync_bridge__"] {
+        display: none !important;
+        position: fixed !important;
+        left: -9999px !important;
+        top: -9999px !important;
+        width: 0px !important;
+        height: 0px !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        visibility: hidden !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.text_area(
+        "__notes_sync_bridge__",
+        value=st.session_state.get("appunti_generati", ""),
+        key="notes_sync_bridge_input",
+        on_change=handle_notes_sync_bridge,
+        label_visibility="collapsed"
+    )
+
 def generate_image_paste_drop_js():
     """
-    Genera lo script JavaScript per intercettare Ctrl+V (paste) e Drag & Drop
-    di immagini sulle textarea Streamlit degli appunti (Home e Canvas).
-    Supporta l'upload in background anche dalla modalità anteprima usando un widget nascosto.
+    Genera lo script JavaScript per:
+    1. Intercettare Ctrl+V (paste) e Drag & Drop di immagini.
+    2. Gestire il ridimensionamento interattivo con maniglia di trascinamento (Drag-to-Resize) dall'anteprima formattata.
     """
     supabase_url = os.getenv("SUPABASE_URL", "")
     supabase_key = os.getenv("SUPABASE_KEY", "")
@@ -445,8 +485,67 @@ def generate_image_paste_drop_js():
         const SUPABASE_KEY = '{supabase_key}';
         const BUCKET = 'canvas-images';
 
-        if (pWin.__imagePasteDropInitialized) return;
-        pWin.__imagePasteDropInitialized = true;
+        // Stili per la maniglia di trascinamento e il badge percentuale
+        function ensureImageResizeStyles() {{
+            if (pDoc.getElementById('image-resize-styles')) return;
+            var styleEl = pDoc.createElement('style');
+            styleEl.id = 'image-resize-styles';
+            styleEl.textContent = `
+                .resizable-img-wrapper {{
+                    position: relative;
+                    user-select: none;
+                    display: block;
+                    margin: 18px auto;
+                }}
+                .img-drag-handle {{
+                    position: absolute;
+                    bottom: 8px;
+                    right: 8px;
+                    width: 24px;
+                    height: 24px;
+                    background: rgba(15, 23, 42, 0.88);
+                    border: 1.5px solid rgba(255, 255, 255, 0.45);
+                    border-radius: 6px;
+                    color: #ffffff;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: nwse-resize;
+                    opacity: 0;
+                    transition: opacity 0.2s ease, transform 0.15s ease, background-color 0.2s ease;
+                    z-index: 20;
+                    backdrop-filter: blur(4px);
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+                    touch-action: none;
+                }}
+                .resizable-img-wrapper:hover .img-drag-handle {{
+                    opacity: 0.85;
+                }}
+                .img-drag-handle:hover, .img-drag-handle.active-drag {{
+                    opacity: 1 !important;
+                    transform: scale(1.18);
+                    background: #2563eb !important;
+                    border-color: #60a5fa !important;
+                }}
+                .img-size-badge {{
+                    position: absolute;
+                    bottom: 38px;
+                    right: 8px;
+                    background: rgba(15, 23, 42, 0.95);
+                    color: #60a5fa;
+                    font-size: 11px;
+                    font-weight: 700;
+                    padding: 3px 8px;
+                    border-radius: 6px;
+                    border: 1px solid #3b82f6;
+                    z-index: 25;
+                    pointer-events: none;
+                    font-family: system-ui, -apple-system, sans-serif;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+                }}
+            `;
+            pDoc.head.appendChild(styleEl);
+        }}
 
         function uuid4() {{
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {{
@@ -533,7 +632,7 @@ def generate_image_paste_drop_js():
             var icon = success ? '✅' : '❌';
             if (!success && message.includes("Modalità Modifica")) {{
                 icon = '⚠️';
-                bg = 'rgba(245,158,11,0.95)'; // arancione/giallo per warning
+                bg = 'rgba(245,158,11,0.95)';
             }}
             toast.innerHTML = '<div style="position:fixed;bottom:80px;right:25px;z-index:999999999;background:' + bg + ';backdrop-filter:blur(10px);border-radius:12px;padding:12px 20px;box-shadow:0 10px 30px rgba(0,0,0,0.6);color:#ffffff;font-size:13px;font-weight:600;animation:slide-in-notification 0.3s ease-out;">' + icon + ' ' + message + '</div>';
             pDoc.body.appendChild(toast);
@@ -547,12 +646,10 @@ def generate_image_paste_drop_js():
             for (var i = 0; i < textareas.length; i++) {{
                 var label = textareas[i].getAttribute('aria-label') || '';
                 
-                // Ignora la chat input!
-                if (label.indexOf('Assistente AI') !== -1 || label.indexOf('Chiedi') !== -1) {{
+                if (label.indexOf('Assistente AI') !== -1 || label.indexOf('Chiedi') !== -1 || label.indexOf('__notes_sync_bridge__') !== -1) {{
                     continue;
                 }}
                 
-                // Match preciso sulle textarea degli appunti (Home e Canvas)
                 if (label.indexOf('Modifica direttamente il testo') !== -1 || label.indexOf('Modifica liberamente il testo') !== -1) {{
                     return textareas[i];
                 }}
@@ -586,8 +683,171 @@ def generate_image_paste_drop_js():
             textarea.selectionStart = newCursorPos;
             textarea.selectionEnd = newCursorPos;
             
-            // Ripristina semplicemente il focus sulla textarea senza forzare il blur
             try {{ textarea.focus(); }} catch(e) {{}}
+        }}
+
+        function escapeRegExp(string) {{
+            return string.replace(/[.*+?^${{}}()|[\\]\\\\]/g, '\\\\$&');
+        }}
+
+        function syncImageSizeChange(rawUrl, rawAlt, newPct) {{
+            var escapedUrl = escapeRegExp(rawUrl);
+            var imgRegex = new RegExp('!\\[([^\\]]*)\\]\\(' + escapedUrl + '\\)', 'g');
+            var cleanAlt = rawAlt.split('|')[0].trim() || 'Immagine';
+            var newTag = '![' + cleanAlt + '|' + newPct + '%](' + rawUrl + ')';
+
+            // 1. Controlla prima le textarea visibili
+            var visibleTextarea = null;
+            var textareas = pDoc.querySelectorAll('textarea');
+            for (var i = 0; i < textareas.length; i++) {{
+                var lbl = textareas[i].getAttribute('aria-label') || '';
+                if (lbl.indexOf('Modifica direttamente il testo') !== -1 || lbl.indexOf('Modifica liberamente il testo') !== -1) {{
+                    visibleTextarea = textareas[i];
+                    break;
+                }}
+            }}
+
+            if (visibleTextarea) {{
+                var currentVal = visibleTextarea.value || '';
+                if (imgRegex.test(currentVal)) {{
+                    var updatedVal = currentVal.replace(imgRegex, newTag);
+                    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, 'value').set;
+                    nativeInputValueSetter.call(visibleTextarea, updatedVal);
+                    visibleTextarea.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
+                    visibleTextarea.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
+                    return;
+                }}
+            }}
+
+            // 2. Se in Anteprima Formattata, usa il bridge textarea nascosto
+            var bridgeTextarea = pDoc.querySelector('textarea[aria-label="__notes_sync_bridge__"]');
+            if (bridgeTextarea) {{
+                var currentBridgeVal = bridgeTextarea.value || '';
+                if (imgRegex.test(currentBridgeVal)) {{
+                    var updatedBridgeVal = currentBridgeVal.replace(imgRegex, newTag);
+                    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, 'value').set;
+                    nativeInputValueSetter.call(bridgeTextarea, updatedBridgeVal);
+                    bridgeTextarea.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
+                    bridgeTextarea.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
+                }}
+            }}
+        }}
+
+        // --- GESTIONE DRAG-TO-RESIZE IMMAGINI NELL'ANTEPRIMA FORMATTATA ---
+        function initImageResizeDrag() {{
+            ensureImageResizeStyles();
+
+            var isResizing = false;
+            var currentWrapper = null;
+            var currentBadge = null;
+            var startX = 0;
+            var startWidth = 0;
+            var parentWidth = 0;
+            var rawUrl = '';
+            var rawAlt = '';
+            var finalPct = 100;
+
+            function onMouseDown(e) {{
+                var handle = e.target.closest ? e.target.closest('.img-drag-handle') : null;
+                if (!handle) return;
+
+                e.preventDefault();
+                e.stopPropagation();
+
+                currentWrapper = handle.closest('.resizable-img-wrapper');
+                if (!currentWrapper) return;
+
+                currentBadge = currentWrapper.querySelector('.img-size-badge');
+                rawUrl = currentWrapper.getAttribute('data-raw-url') || '';
+                rawAlt = currentWrapper.getAttribute('data-raw-alt') || 'Immagine';
+
+                var wrapperRect = currentWrapper.getBoundingClientRect();
+                var container = currentWrapper.closest('[data-testid="stColumn"]') || 
+                                currentWrapper.closest('.stTabs') || 
+                                currentWrapper.parentElement;
+                var containerRect = container ? container.getBoundingClientRect() : wrapperRect;
+
+                startX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+                startWidth = wrapperRect.width;
+                parentWidth = containerRect.width || startWidth;
+
+                isResizing = true;
+                handle.classList.add('active-drag');
+                if (currentBadge) {{
+                    currentBadge.style.display = 'block';
+                    var curPct = Math.max(15, Math.min(100, Math.round(startWidth / parentWidth * 100)));
+                    currentBadge.innerText = curPct + '%';
+                }}
+
+                pDoc.body.style.cursor = 'nwse-resize';
+                pDoc.body.style.userSelect = 'none';
+
+                pDoc.addEventListener('mousemove', onMouseMove, true);
+                pDoc.addEventListener('mouseup', onMouseUp, true);
+                pDoc.addEventListener('touchmove', onMouseMove, {{ passive: false, capture: true }});
+                pDoc.addEventListener('touchend', onMouseUp, true);
+            }}
+
+            function onMouseMove(e) {{
+                if (!isResizing || !currentWrapper) return;
+
+                e.preventDefault();
+                var clientX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : startX);
+                var deltaX = clientX - startX;
+                var newWidthPx = Math.max(80, Math.min(parentWidth, startWidth + (deltaX * 2)));
+                var pct = Math.max(15, Math.min(100, Math.round(newWidthPx / parentWidth * 100)));
+                finalPct = pct;
+
+                currentWrapper.style.width = pct + '%';
+                if (currentBadge) {{
+                    currentBadge.innerText = pct + '%';
+                    currentBadge.style.display = 'block';
+                }}
+            }}
+
+            function onMouseUp(e) {{
+                if (!isResizing) return;
+                isResizing = false;
+
+                pDoc.removeEventListener('mousemove', onMouseMove, true);
+                pDoc.removeEventListener('mouseup', onMouseUp, true);
+                pDoc.removeEventListener('touchmove', onMouseMove, true);
+                pDoc.removeEventListener('touchend', onMouseUp, true);
+
+                pDoc.body.style.cursor = '';
+                pDoc.body.style.userSelect = '';
+
+                if (currentWrapper) {{
+                    var handle = currentWrapper.querySelector('.img-drag-handle');
+                    if (handle) handle.classList.remove('active-drag');
+                }}
+
+                if (currentBadge) {{
+                    setTimeout(function() {{
+                        if (currentBadge && !isResizing) currentBadge.style.display = 'none';
+                    }}, 1200);
+                }}
+
+                if (rawUrl) {{
+                    syncImageSizeChange(rawUrl, rawAlt, finalPct);
+                }}
+
+                currentWrapper = null;
+                currentBadge = null;
+            }}
+
+            if (pDoc.__imgResizeMouseDown) {{
+                pDoc.removeEventListener('mousedown', pDoc.__imgResizeMouseDown, true);
+            }}
+            if (pDoc.__imgResizeTouchStart) {{
+                pDoc.removeEventListener('touchstart', pDoc.__imgResizeTouchStart, true);
+            }}
+
+            pDoc.__imgResizeMouseDown = onMouseDown;
+            pDoc.__imgResizeTouchStart = onMouseDown;
+
+            pDoc.addEventListener('mousedown', onMouseDown, true);
+            pDoc.addEventListener('touchstart', onMouseDown, {{ passive: false, capture: true }});
         }}
 
         function processImageFile(file, targetTextarea) {{
@@ -615,7 +875,10 @@ def generate_image_paste_drop_js():
             }});
         }}
 
-        pDoc.addEventListener('paste', function(e) {{
+        if (pDoc.__pasteHandler) {{
+            pDoc.removeEventListener('paste', pDoc.__pasteHandler, true);
+        }}
+        pDoc.__pasteHandler = function(e) {{
             var items = (e.clipboardData || e.originalEvent.clipboardData || {{}}).items;
             if (!items) return;
             
@@ -629,23 +892,24 @@ def generate_image_paste_drop_js():
                     return;
                 }}
             }}
-        }}, true);
+        }};
+        pDoc.addEventListener('paste', pDoc.__pasteHandler, true);
 
-        // Funzione globale per bloccare il drag and drop del browser
         function preventDefaults(e) {{
             e.preventDefault();
             e.stopPropagation();
         }}
 
-        // Blocchiamo gli eventi su ogni possibile livello
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {{
             pDoc.addEventListener(eventName, preventDefaults, false);
             pWin.addEventListener(eventName, preventDefaults, false);
             pDoc.body.addEventListener(eventName, preventDefaults, false);
         }});
 
-        // Gestione effettiva del drop (in capture phase)
-        pDoc.addEventListener('drop', function(e) {{
+        if (pDoc.__dropHandler) {{
+            pDoc.removeEventListener('drop', pDoc.__dropHandler, true);
+        }}
+        pDoc.__dropHandler = function(e) {{
             preventDefaults(e);
             
             if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
@@ -674,14 +938,17 @@ def generate_image_paste_drop_js():
             }}
             
             processImageFile(file, textarea);
-        }}, true);
+        }};
+        pDoc.addEventListener('drop', pDoc.__dropHandler, true);
 
-        console.log('[ImagePasteDrop] Inizializzato. Ricevitore attivo solo in modalità Modifica.');
+        initImageResizeDrag();
+        console.log('[ImageDragResize] Inizializzato con successo.');
     }})();
     </script>
     """
 
 def inject_image_paste_drop_js():
+    render_notes_sync_bridge()
     js_html = generate_image_paste_drop_js()
     if js_html:
         st.iframe(js_html, height=1)
@@ -1257,7 +1524,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             with tab_canvas_md:
                 render_version_navigation_bar("canvas_tab_md")
                 st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
-                cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "").strip()
+                cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "", default_width="50%").strip()
 
                 canvas_scroll_area_md = st.container(border=False)
                 with canvas_scroll_area_md:
@@ -1272,7 +1539,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         st.session_state.appunti_generati = edited_text_canvas
                     else:
                         canvas_placeholder = st.empty()
-                        canvas_placeholder.markdown(cleaned_render_canvas)
+                        canvas_placeholder.markdown(cleaned_render_canvas, unsafe_allow_html=True)
 
             with tab_canvas_lat:
                 canvas_scroll_area_lat = st.container(border=False)
@@ -1296,7 +1563,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         else:
             render_version_navigation_bar("canvas_no_tab_md")
             st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
-            cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "").strip()
+            cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "", default_width="50%").strip()
 
             canvas_scroll_area = st.container(border=False)
             with canvas_scroll_area:
@@ -1311,7 +1578,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     st.session_state.appunti_generati = edited_text_canvas
                 else:
                     canvas_placeholder = st.empty()
-                    canvas_placeholder.markdown(cleaned_render_canvas)
+                    canvas_placeholder.markdown(cleaned_render_canvas, unsafe_allow_html=True)
+
+        inject_image_paste_drop_js()
 
     # 2. SEPARATORE CENTRALE CON DRAG HANDLE TRASCINABILE (#drag-handle-pill-native)
     with col_handle:
@@ -1756,9 +2025,6 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         </script>
         """
         st.iframe(draggable_handle_js, height=1)
-        
-        # Iniezione script JavaScript per Ctrl+V e Drag & Drop immagini (Canvas)
-        inject_image_paste_drop_js()
 
         # Flag streaming nascosto DENTRO col_chat, renderizzato PRIMA del blocco streaming
         _streaming_flag_val = "true" if st.session_state.pending_agent_stream else "false"
@@ -1817,7 +2083,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             chat_response_placeholder.markdown(live_chat_part)
                         
                         if live_canvas_part and live_canvas_part != "NO_CHANGE" and len(live_canvas_part) > 5:
-                            cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(live_canvas_part)
+                            cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(live_canvas_part, default_width="50%")
                             if not st.session_state.get("stream_version_created", False):
                                 add_note_version(cleaned_live_canvas)
                                 st.session_state.stream_version_created = True
@@ -1833,7 +2099,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                     safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
                                     safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
                                     if canvas_placeholder is not None:
-                                        canvas_placeholder.markdown(cleaned_live_canvas)
+                                        canvas_placeholder.markdown(cleaned_live_canvas, unsafe_allow_html=True)
 
                     # Controllo finale: se non ha emesso nulla, crea comunque la bolla
                     if not chat_bubble_created:
@@ -1846,7 +2112,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     final_chat_reply, final_canvas = parse_agent_response(full_raw_response)
 
                     if final_canvas and final_canvas != "NO_CHANGE" and len(final_canvas) > 5:
-                        cleaned_canvas = notion_helper.clean_markdown_for_streamlit(final_canvas)
+                        cleaned_canvas = notion_helper.clean_markdown_for_streamlit(final_canvas, default_width="50%")
                         target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
                         if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
                             st.session_state.notes_versions[target_idx] = cleaned_canvas
@@ -2555,8 +2821,8 @@ else:
                             )
                             st.session_state.appunti_generati = edited_text
                         else:
-                            cleaned_render = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati)
-                            st.markdown(cleaned_render)
+                            cleaned_render = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati, default_width="30%")
+                            st.markdown(cleaned_render, unsafe_allow_html=True)
 
                         st.divider()
                         

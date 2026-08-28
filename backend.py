@@ -259,7 +259,7 @@ def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None)
             model=model_name,
             contents=f"{prompt}\n\nTRASCRIZIONE:\n{text}"
         )
-        cleaned_notes = notion_helper.clean_markdown_for_streamlit(response.text)
+        cleaned_notes = notion_helper.sanitize_latex_formulas(response.text)
         return True, cleaned_notes
     except Exception as e:
         return False, f"Errore durante la generazione degli appunti con {model_name}: {str(e)}"
@@ -337,8 +337,8 @@ REGOLE TASSATIVE E INVIOLABILI:
    - Utilizza l'insieme di tutte le parti della trascrizione e degli appunti per rispondere con la massima precisione ed accuratezza.
 
 4. PRESERVAZIONE TASSATIVA DELLE IMMAGINI E DEI MEDIA:
-   - Se il documento Canvas contiene tag immagine del tipo `![...](URL)` o `![Immagine](https://...)`, DEVI ASSOLUTAMENTE mantenerli intatti e posizionati esattamente nello stesso identico punto contestuale in cui si trovano originariamente.
-   - È SEVERAMENTE VIETATO rimuovere, omettere, spostare arbitrariamente o alterare gli URL dei tag immagine quando riscrivi, sintetizzi, espandi, formatti o aggiorni il Canvas sotto <<<UPDATED_CANVAS>>>.
+   - Se il documento Canvas contiene tag immagine del tipo `![...](URL)`, `![...|50%](URL)` o `![Immagine](https://...)`, DEVI ASSOLUTAMENTE mantenerli intatti e posizionati esattamente nello stesso identico punto contestuale in cui si trovano originariamente.
+   - È SEVERAMENTE VIETATO rimuovere, omettere, spostare arbitrariamente o alterare gli URL e i parametri di dimensione dei tag immagine quando riscrivi, sintetizzi, espandi, formatti o aggiorni il Canvas sotto <<<UPDATED_CANVAS>>>.
    - Le immagini sono parte integrante del materiale didattico e devono essere sempre preservate nella loro posizione originale rispetto al testo circostante.
 
 FORMATO DI RISPOSTA TASSATIVO ED OBBLIGATORIO:
@@ -418,7 +418,7 @@ ISTRUZIONE DELL'UTENTE:
         
         chat_reply, canvas_part = parse_agent_response(raw_text)
         if canvas_part and canvas_part != "NO_CHANGE" and len(canvas_part) > 5:
-            updated_markdown = notion_helper.clean_markdown_for_streamlit(canvas_part)
+            updated_markdown = notion_helper.sanitize_latex_formulas(canvas_part)
         else:
             updated_markdown = current_markdown
 

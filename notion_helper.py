@@ -86,19 +86,114 @@ def format_iso_date(date_val) -> str:
             return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
     return date_str
 
-def clean_markdown_for_streamlit(text: str) -> str:
+def normalize_images_to_markdown(text: str) -> str:
+    """
+    Riconverte eventuali blocchi HTML <div class="resizable-img-wrapper"> nel formato standard ![alt|dim](url)
+    in modo che il markdown memorizzato nello stato interno rimanga sempre Markdown pulito.
+    """
+    if not text or "resizable-img-wrapper" not in text:
+        return text
+    
+    html_pattern = r'<div class="resizable-img-wrapper"[^>]*data-raw-url="([^"]+)"[^>]*data-raw-alt="([^"]*)"[^>]*style="[^"]*width:\s*([^;%px]+[%px]*)[^"]*"[^>]*>[\s\S]*?</div>\s*</div>'
+    def repl_html(m):
+        raw_url = m.group(1).replace('&quot;', '"')
+        raw_alt = m.group(2).replace('&quot;', '"')
+        w_val = m.group(3).strip()
+        # Se la dimensione è una dimensione custom specifica diversa da standard senza pipe, mantienila
+        if w_val and w_val != "100%" and w_val != "30%" and w_val != "50%":
+            return f"![{raw_alt}|{w_val}]({raw_url})"
+        return f"![{raw_alt}]({raw_url})"
+    
+    cleaned = re.sub(html_pattern, repl_html, text)
+    html_pattern_fallback = r'<div class="resizable-img-wrapper"[^>]*data-raw-url="([^"]+)"[^>]*data-raw-alt="([^"]*)"[^>]*>[\s\S]*?</div>\s*</div>'
+    def repl_fallback(m):
+        raw_url = m.group(1).replace('&quot;', '"')
+        raw_alt = m.group(2).replace('&quot;', '"')
+        return f"![{raw_alt}]({raw_url})"
+    return re.sub(html_pattern_fallback, repl_fallback, cleaned)
+
+def sanitize_latex_formulas(text: str) -> str:
     """
     Pulisce la sintassi LaTeX/Markdown per garantire che Streamlit (KaTeX) e Notion renderizzino
     le formule senza errori o caratteri rotti.
     """
     if not text:
         return ""
-    # Rimuove \begin{equation} e \end{equation} ridondanti che rompono KaTeX in Streamlit
     cleaned = re.sub(r'\\begin\{equation\*?\}', '', text)
     cleaned = re.sub(r'\\end\{equation\*?\}', '', cleaned)
-    # Assicura che i blocchi $$ siano a capo e staccati dal testo successivo
     cleaned = re.sub(r'([^\n])\$\$', r'\1\n$$', cleaned)
     cleaned = re.sub(r'\$\$([^\n])', r'$$\n\1', cleaned)
+    return cleaned
+
+def format_markdown_images_for_streamlit(text: str, default_width: str = "30%") -> str:
+    """
+    Converte i tag immagine Markdown standard o con dimensione (![alt|50%](url))
+    in contenitori HTML con maniglia di trascinamento (drag-to-resize) per l'anteprima formattata.
+    Se non è specificata una dimensione nel tag, usa default_width (es. 30% in Home, 50% in Canvas).
+    """
+    if not text:
+        return ""
+    
+    # 1. Normalizza prima qualsiasi residuo HTML in Markdown
+    text = normalize_images_to_markdown(text)
+    
+    clean_default_w = str(default_width).strip()
+    if clean_default_w.isdigit():
+        clean_default_w = f"{clean_default_w}%"
+    elif not clean_default_w.endswith("%") and not clean_default_w.endswith("px"):
+        clean_default_w = "30%"
+    
+    def repl_img(match):
+        alt_raw = (match.group(1) or "").strip()
+        img_url = match.group(2).strip()
+        
+        alt_clean = alt_raw
+        width_style = clean_default_w
+        width_badge = clean_default_w
+        
+        if "|" in alt_raw:
+            parts = alt_raw.split("|", 1)
+            alt_clean = parts[0].strip()
+            dim_str = parts[1].strip().lower()
+            if dim_str.endswith("%") or dim_str.endswith("px"):
+                width_style = dim_str
+                width_badge = dim_str
+            elif dim_str.isdigit():
+                width_style = f"{dim_str}%"
+                width_badge = f"{dim_str}%"
+
+        safe_url = img_url.replace('"', '&quot;')
+        safe_alt = (alt_clean or "Immagine").replace('"', '&quot;')
+        
+        return (
+            f'\n\n<div class="resizable-img-wrapper" data-raw-url="{safe_url}" data-raw-alt="{safe_alt}" '
+            f'style="position: relative; display: block; margin: 18px auto; width: {width_style}; max-width: 100%; transition: width 0.05s ease;">'
+            f'<div style="position: relative; display: inline-block; width: 100%;">'
+            f'<img src="{safe_url}" alt="{safe_alt}" style="width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.3); display: block;" loading="lazy" />'
+            f'<div class="img-drag-handle" title="Trascina con il mouse per ridimensionare">'
+            f'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+            f'<line x1="21" y1="9" x2="9" y2="21"></line>'
+            f'<line x1="21" y1="15" x2="15" y2="21"></line>'
+            f'<line x1="21" y1="21" x2="21" y2="21"></line>'
+            f'</svg>'
+            f'</div>'
+            f'<div class="img-size-badge" style="display: none;">{width_badge}</div>'
+            f'</div>'
+            f'</div>\n\n'
+        )
+
+    pattern = r'!\[([^\]]*)\]\((https?://[^)\s]+)\)'
+    return re.sub(pattern, repl_img, text)
+
+def clean_markdown_for_streamlit(text: str, default_width: str = "30%") -> str:
+    """
+    Pulisce la sintassi LaTeX/Markdown per garantire che Streamlit (KaTeX) e Notion renderizzino
+    le formule senza errori o caratteri rotti, e arricchisce le immagini con i controlli interattivi di ridimensionamento.
+    """
+    if not text:
+        return ""
+    cleaned = sanitize_latex_formulas(text)
+    cleaned = format_markdown_images_for_streamlit(cleaned, default_width=default_width)
     return cleaned
 
 def split_notion_page_sections(markdown_text: str) -> dict:
@@ -731,7 +826,7 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
                     lines.append(f"![{caption_text}]({img_url})")
                 
         raw_markdown = "\n\n".join(lines)
-        return clean_markdown_for_streamlit(raw_markdown)
+        return sanitize_latex_formulas(raw_markdown)
     except Exception as e:
         print(f"Errore lettura blocchi da Notion: {e}")
         return ""
@@ -1048,11 +1143,13 @@ def markdown_to_notion_blocks(markdown_text: str):
             idx += 1
             continue
 
-        # 3.5 Immagini Markdown ![alt](url)
+        # 3.5 Immagini Markdown ![alt](url) o ![alt|50%](url)
         img_match = re.match(r'^!\[([^\]]*)\]\(([^)]+)\)$', stripped)
         if img_match:
             alt_text = img_match.group(1) or "Immagine"
-            img_url = img_match.group(2)
+            img_url = img_match.group(2).strip()
+            if "|" in alt_text:
+                alt_text = alt_text.split("|")[0].strip()
             caption_rt = [{"type": "text", "text": {"content": alt_text}}] if alt_text and alt_text != "Immagine" else []
             blocks.append({
                 "object": "block",
