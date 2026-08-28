@@ -4,6 +4,7 @@ import time
 import datetime
 import threading
 import importlib
+import html
 from dotenv import load_dotenv
 
 import backend
@@ -446,15 +447,13 @@ def render_notes_sync_bridge():
     div:has(> textarea[aria-label="__notes_sync_bridge__"]),
     div[data-testid="element-container"]:has(textarea[aria-label="__notes_sync_bridge__"]),
     textarea[aria-label="__notes_sync_bridge__"] {
-        display: none !important;
         position: fixed !important;
         left: -9999px !important;
         top: -9999px !important;
-        width: 0px !important;
-        height: 0px !important;
-        opacity: 0 !important;
+        width: 1px !important;
+        height: 1px !important;
+        opacity: 0.01 !important;
         pointer-events: none !important;
-        visibility: hidden !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -624,26 +623,52 @@ def generate_image_paste_drop_js():
                 }}
                 indicator.style.display = 'block';
             }} else {{
-                if (indicator) indicator.style.display = 'none';
+                if (indicator) indicator.remove();
             }}
         }}
 
         function showUploadToast(success, message) {{
+            try {{
+                var oldToasts = pDoc.querySelectorAll('.custom-upload-toast');
+                oldToasts.forEach(function(el) {{ el.remove(); }});
+            }} catch(e) {{}}
+
             var toast = pDoc.createElement('div');
+            toast.className = 'custom-upload-toast';
             var bg = success ? 'rgba(16,185,129,0.95)' : 'rgba(239,68,68,0.95)';
             var icon = success ? '✅' : '❌';
             if (!success && message.includes("Modalità Modifica")) {{
                 icon = '⚠️';
                 bg = 'rgba(245,158,11,0.95)';
             }}
-            toast.innerHTML = '<div style="position:fixed;bottom:80px;right:25px;z-index:999999999;background:' + bg + ';backdrop-filter:blur(10px);border-radius:12px;padding:12px 20px;box-shadow:0 10px 30px rgba(0,0,0,0.6);color:#ffffff;font-size:13px;font-weight:600;animation:slide-in-notification 0.3s ease-out;">' + icon + ' ' + message + '</div>';
+            toast.style.cssText = 'position:fixed;bottom:80px;right:25px;z-index:999999999;background:' + bg + ';backdrop-filter:blur(10px);border-radius:12px;padding:12px 20px;box-shadow:0 10px 30px rgba(0,0,0,0.6);color:#ffffff;font-size:13px;font-weight:600;cursor:pointer;user-select:none;transition:opacity 0.4s ease, transform 0.4s ease;animation:slide-in-notification 0.3s ease-out;';
+            toast.innerHTML = icon + ' ' + message;
+            
+            toast.onclick = function() {{
+                toast.remove();
+            }};
+
             pDoc.body.appendChild(toast);
-            setTimeout(function() {{ toast.remove(); }}, 3500);
+
+            pWin.setTimeout(function() {{
+                try {{
+                    toast.style.opacity = '0';
+                    toast.style.transform = 'translateY(15px)';
+                    pWin.setTimeout(function() {{
+                        try {{ toast.remove(); }} catch(e) {{}}
+                    }}, 400);
+                }} catch(e) {{
+                    try {{ toast.remove(); }} catch(e2) {{}}
+                }}
+            }}, 2800);
         }}
 
         function findTargetTextarea(eventTarget) {{
             if (eventTarget && eventTarget.tagName === 'TEXTAREA') return eventTarget;
             
+            var rawEditor = pDoc.querySelector('.raw-markdown-editor');
+            if (rawEditor) return rawEditor;
+
             var textareas = pDoc.querySelectorAll('textarea');
             for (var i = 0; i < textareas.length; i++) {{
                 var label = textareas[i].getAttribute('aria-label') || '';
@@ -680,6 +705,21 @@ def generate_image_paste_drop_js():
 
             textarea.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
             textarea.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
+            
+            var bridge = pDoc.querySelector('textarea[aria-label="__notes_sync_bridge__"]');
+            if (bridge) {{
+                if (nativeInputValueSetter) {{
+                    nativeInputValueSetter.call(bridge, newValue);
+                }} else {{
+                    bridge.value = newValue;
+                }}
+                var tracker = bridge._valueTracker;
+                if (tracker) tracker.setValue(currentVal);
+                bridge.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                bridge.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                bridge.dispatchEvent(new Event('focusout', {{ bubbles: true }}));
+                bridge.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+            }}
             
             var newCursorPos = start + prefix.length + textToInsert.length + suffix.length;
             textarea.selectionStart = newCursorPos;
@@ -949,8 +989,226 @@ def generate_image_paste_drop_js():
     </script>
     """
 
+def inject_scroll_sync_mode_js():
+    """
+    Sincronizza le modifiche di testo dell'editor HTML verso Streamlit e mantiene con precisione la posizione di lettura tra Anteprima e Modifica.
+    """
+    sync_js = """
+    <script>
+    (function() {
+        const pDoc = window.parent.document || document;
+        const pWin = window.parent || window;
+
+        function getVisibleSnippet(container) {
+            if (!container) return '';
+            const cRect = container.getBoundingClientRect();
+            const elements = container.querySelectorAll('h1, h2, h3, h4, h5, p, li, strong, code');
+            for (const el of elements) {
+                const r = el.getBoundingClientRect();
+                // Find first element that is somewhat near the top of the container
+                if (r.top >= cRect.top - 10 && r.top <= cRect.top + 200) {
+                    const txt = (el.innerText || el.textContent || '').trim();
+                    if (txt.length >= 6) return txt.substring(0, 30);
+                }
+            }
+            return '';
+        }
+
+        // Global scroll listener for Preview mode
+        pDoc.addEventListener('scroll', function(e) {
+            const el = e.target;
+            if (!el || el === pDoc || el === pDoc.body || el === pDoc.documentElement) return;
+            if (el.tagName === 'TEXTAREA') return; // Handled separately
+            
+            if (el.clientHeight >= 200 && el.clientHeight <= 1000) {
+                if (el.querySelector('h1, h2, h3, p, li')) {
+                    const snip = getVisibleSnippet(el);
+                    if (snip) pWin.__readingSnippet = snip;
+                    const max = el.scrollHeight - el.clientHeight;
+                    if (max > 0) pWin.__readingRatio = el.scrollTop / max;
+                }
+            }
+        }, true);
+
+        function saveEditorPos(ed) {
+            const val = ed.value || '';
+            const maxScroll = Math.max(1, ed.scrollHeight - ed.clientHeight);
+            const ratio = ed.scrollTop / maxScroll;
+            pWin.__readingRatio = ratio;
+            
+            // Find char index for the top visible line based on scroll
+            const totalLines = val.split('\\n').length;
+            // We use ed.scrollTop / ed.scrollHeight to estimate the visible line
+            const approxLine = Math.max(0, Math.floor((ed.scrollTop / (ed.scrollHeight || 1)) * totalLines));
+            const lines = val.split('\\n');
+            let charIdx = 0;
+            for (let i = 0; i < approxLine && i < lines.length; i++) {
+                charIdx += lines[i].length + 1;
+            }
+            
+            // Extract a snippet and remove markdown characters to match Anteprima's innerText
+            let snip = val.substring(charIdx, charIdx + 150).replace(/[#*`_\\[\\]()>\\-]/g, '').replace(/\\s+/g, ' ').trim();
+            if (snip.length >= 10) pWin.__readingSnippet = snip;
+        }
+
+        function restoreEditor(ed) {
+            const snippet = pWin.__readingSnippet;
+            const ratio = pWin.__readingRatio || 0;
+            const val = ed.value || '';
+            let charPos = -1;
+
+            if (snippet && snippet.length >= 8) {
+                const searchSnip = snippet.substring(0, 20);
+                charPos = val.indexOf(searchSnip);
+                if (charPos === -1) charPos = val.indexOf(snippet.substring(0, 10));
+            }
+            if (charPos === -1 && ratio > 0) {
+                charPos = Math.floor(ratio * val.length);
+            }
+
+            if (charPos >= 0) {
+                const applyEd = () => {
+                    const lines = val.substring(0, charPos).split('\\n').length;
+                    const totalLines = Math.max(1, val.split('\\n').length);
+                    const approxLineH = ed.scrollHeight > 0 ? (ed.scrollHeight / totalLines) : 22;
+                    ed.scrollTop = Math.max(0, (lines - 2) * approxLineH);
+                };
+                applyEd();
+                setTimeout(applyEd, 50);
+                setTimeout(applyEd, 150);
+            }
+        }
+
+        function restorePreview() {
+            // Locate the preview container
+            let c = null;
+            const allDivs = pDoc.querySelectorAll('div');
+            for (const div of allDivs) {
+                const overflowStyle = window.getComputedStyle(div).overflow;
+                if (div.clientHeight >= 200 && div.clientHeight <= 1000 && (overflowStyle === 'auto' || overflowStyle === 'overlay' || overflowStyle === 'scroll')) {
+                    if (div.querySelector('h1, h2, p, li')) {
+                        c = div; break;
+                    }
+                }
+            }
+            if (!c) {
+                const containers = pDoc.querySelectorAll('div[data-testid="stVerticalBlockBorderWrapper"] > div, div[data-testid="stVerticalBlock"]');
+                for (const el of containers) {
+                    if (el.clientHeight > 200 && el.clientHeight < 1000 && el.querySelector('p, h1, h2')) {
+                        c = el; break;
+                    }
+                }
+            }
+            if (!c) return;
+
+            const snippet = pWin.__readingSnippet;
+            const ratio = pWin.__readingRatio || 0;
+
+            const applyPreview = () => {
+                let targetScroll = -1;
+                if (snippet && snippet.length >= 5) {
+                    const els = c.querySelectorAll('h1, h2, h3, h4, h5, p, li, strong, code');
+                    const cRect = c.getBoundingClientRect();
+                    for (const el of els) {
+                        if ((el.innerText || el.textContent || '').includes(snippet.substring(0, 15))) {
+                            const elRect = el.getBoundingClientRect();
+                            targetScroll = elRect.top - cRect.top + c.scrollTop - 20;
+                            break;
+                        }
+                    }
+                }
+                if (targetScroll >= 0) {
+                    c.scrollTop = targetScroll;
+                } else if (ratio > 0) {
+                    const max = c.scrollHeight - c.clientHeight;
+                    if (max > 0) c.scrollTop = ratio * max;
+                }
+            };
+            applyPreview();
+            setTimeout(applyPreview, 50);
+            setTimeout(applyPreview, 150);
+            setTimeout(applyPreview, 300);
+        }
+
+        function checkModeAndSync() {
+            const editors = pDoc.querySelectorAll('.raw-markdown-editor');
+            
+            if (editors.length > 0) {
+                // MODIFICA MODE
+                const ed = editors[0];
+                if (pWin.__currentActiveMode !== 'modifica') {
+                    pWin.__currentActiveMode = 'modifica';
+                    restoreEditor(ed);
+                }
+
+                if (!ed.__boundSync) {
+                    ed.__boundSync = true;
+                    const syncToBridge = function() {
+                        const bridge = pDoc.querySelector('textarea[aria-label="__notes_sync_bridge__"]');
+                        if (bridge) {
+                            const txt = ed.value || '';
+                            if (bridge.value !== txt) {
+                                const lastValue = bridge.value;
+                                
+                                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, 'value').set;
+                                if (nativeInputValueSetter) {
+                                    nativeInputValueSetter.call(bridge, txt);
+                                } else {
+                                    bridge.value = txt;
+                                }
+                                
+                                const tracker = bridge._valueTracker;
+                                if (tracker) {
+                                    tracker.setValue(lastValue);
+                                }
+                                
+                                bridge.dispatchEvent(new Event('input', { bubbles: true }));
+                                bridge.dispatchEvent(new Event('change', { bubbles: true }));
+                                bridge.dispatchEvent(new Event('blur', { bubbles: true }));
+                            }
+                        }
+                    };
+                    ed.addEventListener('input', syncToBridge);
+                    ed.addEventListener('change', syncToBridge);
+                    ed.addEventListener('blur', syncToBridge);
+                    
+                    ed.addEventListener('keyup', () => saveEditorPos(ed));
+                    ed.addEventListener('mouseup', () => saveEditorPos(ed));
+                    ed.addEventListener('scroll', () => saveEditorPos(ed));
+
+                    ed.addEventListener('keydown', function(e) {
+                        if (e.key === 'Tab') {
+                            e.preventDefault();
+                            const start = ed.selectionStart;
+                            const end = ed.selectionEnd;
+                            ed.value = ed.value.substring(0, start) + "    " + ed.value.substring(end);
+                            ed.selectionStart = ed.selectionEnd = start + 4;
+                            syncToBridge();
+                        }
+                    });
+                }
+            } else {
+                // ANTEPRIMA MODE (No editor found)
+                if (pWin.__currentActiveMode !== 'anteprima') {
+                    pWin.__currentActiveMode = 'anteprima';
+                    restorePreview();
+                }
+            }
+        }
+
+        checkModeAndSync();
+        const intId = setInterval(checkModeAndSync, 200);
+        window.addEventListener('unload', function() {
+            clearInterval(intId);
+        });
+    })();
+    </script>
+    """
+    st.components.v1.html(sync_js, height=0)
+
 def inject_image_paste_drop_js():
     render_notes_sync_bridge()
+    inject_scroll_sync_mode_js()
     js_html = generate_image_paste_drop_js()
     if js_html:
         st.iframe(js_html, height=1)
@@ -966,6 +1224,11 @@ def inject_scroll_to_results():
         const pDoc = window.parent.document || document;
         const pWin = window.parent || window;
         
+        if (pWin.__canvasScrollLock) {
+            clearInterval(pWin.__canvasScrollLock);
+            pWin.__canvasScrollLock = null;
+        }
+
         let attempts = 0;
         const maxAttempts = 30;
         
@@ -1021,6 +1284,34 @@ is_latex_active = is_latex_regen_active()
 # ==============================================================================
 if st.session_state.get("show_canvas_chat", False) and st.session_state.get("appunti_generati") is not None:
     # 100% GUARANTEED SCROLLING CHATGPT CANVAS: Blocco Finestra Globale + 2 Slider Verticali Interni
+    canvas_js = """
+        <script>
+        (function() {
+            const pWin = window.parent || window;
+            const pDoc = window.parent.document || document;
+            try {
+                if (pWin.history && pWin.history.scrollRestoration) {
+                    pWin.history.scrollRestoration = 'manual';
+                }
+                const forceZero = () => {
+                    pWin.scrollTo(0, 0);
+                    if (pDoc.documentElement) pDoc.documentElement.scrollTop = 0;
+                    if (pDoc.body) pDoc.body.scrollTop = 0;
+                    const views = pDoc.querySelectorAll('[data-testid="stAppViewContainer"], .main, [data-testid="stMain"], .block-container');
+                    views.forEach(v => {
+                        if (v.scrollTop !== 0) v.scrollTop = 0;
+                    });
+                };
+                forceZero();
+                pWin.__canvasScrollLock = setInterval(forceZero, 50);
+                
+                // Cleanup se l'utente esce dal canvas (es. ricaricando)
+                pWin.addEventListener('unload', () => clearInterval(pWin.__canvasScrollLock));
+            } catch(e) {}
+        })();
+        </script>
+    """
+    
     st.markdown("""
         <style>
             /* Sfondo Grigio Dark ChatGPT #212121 - Blocco Rigido dello Scroll Globale della Finestra */
@@ -1029,6 +1320,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 color: #ffffff !important;
                 overflow: hidden !important;
                 height: 100vh !important;
+                max-height: 100vh !important;
+                margin: 0 !important;
+                padding: 0 !important;
             }
             
             /* ELIMINA OGNI TIPO DI HEADER E DELLO SPAZIO IN ALTO NATIVO DI STREAMLIT */
@@ -1074,13 +1368,15 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 margin-top: 0px !important;
             }
             .main .block-container, [data-testid="stBlockContainer"] {
-                padding-top: 0px !important;
-                padding-bottom: 0.5rem !important;
+                padding-top: 8px !important;
+                padding-bottom: 8px !important;
                 padding-left: 1rem !important;
                 padding-right: 1rem !important;
                 max-width: 100% !important;
                 height: 100vh !important;
+                max-height: 100vh !important;
                 overflow: hidden !important;
+                box-sizing: border-box !important;
             }
             div[data-testid="stAppViewContainer"] {
                 padding-top: 0px !important;
@@ -1093,13 +1389,14 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 padding-top: 0px !important;
             }
 
-            /* CONTENITORE PRINCIPALE A 3 COLONNE CON AMPIO SPAZIO SUPERIORE */
+            /* CONTENITORE PRINCIPALE A 3 COLONNE ANCORATO RIGIDAMENTE IN CIMA */
             .main .block-container > div[data-testid="stElementContainer"] > div[data-testid="stHorizontalBlock"],
             .main .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stHorizontalBlock"],
             .main .block-container div[data-testid="stHorizontalBlock"]:first-of-type {
                 flex-wrap: nowrap !important;
-                height: calc(100vh - 25px) !important;
-                overflow: visible !important;
+                height: calc(100vh - 16px) !important;
+                max-height: calc(100vh - 16px) !important;
+                overflow: hidden !important;
                 margin-top: 0 !important;
                 padding-top: 0 !important;
             }
@@ -1149,82 +1446,31 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 padding-right: 6px !important;
             }
 
-            /* 2. PANNELLO CANVAS (Destra) - ALTEZZA REGOLATA PER VISIBILITÀ COMPLETA */
+            /* 2. PANNELLO CANVAS (Destra) - ALTEZZA REGOLATA CON HEADER FISSO IN ALTO */
             div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) {
                 background-color: #1a1a1a !important;
                 border-radius: 16px !important;
-                padding: 0.8rem 1.2rem 2rem 1.2rem !important;
+                padding: 0.8rem 1.2rem !important;
                 border: 1px solid #333333 !important;
                 box-shadow: 0 4px 25px rgba(0,0,0,0.5) !important;
                 height: calc(100vh - 35px) !important;
                 max-height: calc(100vh - 35px) !important;
-                overflow-x: hidden !important;
-                overflow-y: auto !important;
+                overflow: hidden !important;
                 display: flex !important;
                 flex-direction: column !important;
                 justify-content: flex-start !important;
             }
 
-            /* 3. DIFFERENZIAZIONE VISIVA CHAT UTENTE VS ASSISTENTE AI */
-            div[data-testid="stChatMessage"] {
-                border-radius: 16px !important;
-                padding: 0.8rem 1.1rem !important;
-                margin-top: 8px !important;
-                margin-bottom: 0.9rem !important;
-                transition: all 0.2s ease !important;
-                box-sizing: border-box !important;
-            }
-
-            /* MESSAGGIO UTENTE (Allineato a DESTRA con Bordo Azzurro) */
-            div[data-testid="stChatMessage"]:has([data-testid*="user"]),
-            div[data-testid="stChatMessage"]:has([data-testid*="User"]),
-            div[data-testid="stChatMessage"][aria-label*="user"],
-            div[data-testid="stChatMessage"][aria-label*="User"] {
-                background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%) !important;
-                border: 1.5px solid #3b82f6 !important;
-                border-right: 5px solid #60a5fa !important;
-                border-radius: 16px 16px 4px 16px !important;
-                box-shadow: 0 4px 14px rgba(59, 130, 246, 0.25) !important;
-                margin-left: auto !important;
-                margin-right: 0.4rem !important;
-                max-width: 85% !important;
-                width: fit-content !important;
-            }
-
-            /* MESSAGGIO ASSISTENTE AI (Allineato a SINISTRA con Bordo Smeraldo) */
-            div[data-testid="stChatMessage"]:has([data-testid*="assistant"]),
-            div[data-testid="stChatMessage"]:has([data-testid*="Assistant"]),
-            div[data-testid="stChatMessage"][aria-label*="assistant"],
-            div[data-testid="stChatMessage"][aria-label*="Assistant"] {
-                background: linear-gradient(135deg, #262626 0%, #171717 100%) !important;
-                border: 1.5px solid #383838 !important;
-                border-left: 5px solid #10b981 !important;
-                border-radius: 16px 16px 16px 4px !important;
-                box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4) !important;
-                margin-left: 0.4rem !important;
-                margin-right: auto !important;
-                max-width: 88% !important;
-                width: fit-content !important;
-            }
-
-            div[data-testid="stChatMessage"] > div {
-                background-color: transparent !important;
-                border: none !important;
-            }
-
-            /* 4. RESET TOTALE PER L'HEADER DEL CANVAS (prima riga con i pulsanti) */
-            /* Allineamento verticale centrato per la riga header */
-            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) > div > div > div[data-testid="stHorizontalBlock"]:first-of-type {
+            /* 4. HEADER DEL CANVAS - COMPLETAMENTE FISSO E STATICO IN CIMA */
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3) [data-testid="stHorizontalBlock"]:first-of-type {
                 align-items: center !important;
-                max-height: 48px !important;
-                min-height: 0 !important;
+                min-height: 48px !important;
                 height: auto !important;
                 background-color: transparent !important;
                 background: transparent !important;
-                box-shadow: none !important;
-                border: 0px none transparent !important;
-                outline: none !important;
-                overflow: visible !important;
+                border-bottom: 1px solid #333333 !important;
+                padding-bottom: 6px !important;
+                margin-bottom: 6px !important;
                 gap: 0 !important;
             }
             /* Colonne e wrapper interni dell'header: nessun bordo, nessun padding extra */
@@ -1561,32 +1807,46 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
                 cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "", default_width="50%").strip()
 
-                canvas_scroll_area_md = st.container(border=False)
+                canvas_scroll_area_md = st.container(height=650, border=False)
                 with canvas_scroll_area_md:
                     if st.session_state.canvas_edit_mode_toggle:
-                        edited_text_canvas = st.text_area(
-                            "Modifica direttamente il testo nel Canvas:",
-                            value=st.session_state.appunti_generati,
-                            height=520,
-                            key="markdown_editor_area_canvas",
-                            on_change=update_appunti_from_editor
-                        )
-                        st.session_state.appunti_generati = edited_text_canvas
+                        escaped_text = html.escape(st.session_state.appunti_generati or "")
+                        st.markdown(f"""
+                            <textarea id="canvas-inplace-editor" class="raw-markdown-editor" spellcheck="false" style="
+                                width: 100%;
+                                min-height: 580px;
+                                height: 600px;
+                                background-color: #1e1e1e;
+                                color: #e2e8f0;
+                                font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+                                font-size: 14px;
+                                line-height: 1.6;
+                                padding: 16px;
+                                border: 1.5px solid #383838;
+                                border-radius: 8px;
+                                white-space: pre;
+                                outline: none;
+                                resize: vertical;
+                                box-sizing: border-box;
+                            ">{escaped_text}</textarea>
+                            <div style="height: 140px;"></div>
+                        """, unsafe_allow_html=True)
                     else:
                         canvas_placeholder = st.empty()
-                        canvas_placeholder.markdown(cleaned_render_canvas, unsafe_allow_html=True)
+                        canvas_placeholder.markdown(cleaned_render_canvas + "\n\n<div style='height: 140px;'></div>", unsafe_allow_html=True)
 
             with tab_canvas_lat:
-                canvas_scroll_area_lat = st.container(border=False)
+                canvas_scroll_area_lat = st.container(height=650, border=False)
                 with canvas_scroll_area_lat:
                     if st.session_state.canvas_edit_mode_toggle:
                         edited_latex_canvas = st.text_area(
                             "Modifica direttamente il codice LaTeX nel Canvas:",
                             value=st.session_state.latex_generato if st.session_state.latex_generato else "",
-                            height=560,
+                            height=580,
                             key="latex_editor_area_canvas"
                         )
                         st.session_state.latex_generato = edited_latex_canvas
+                        st.markdown("<div style='height: 140px;'></div>", unsafe_allow_html=True)
                     else:
                         st.code(st.session_state.latex_generato, language="latex")
                         st.divider()
@@ -1595,25 +1855,39 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             st.download_button("💾 Scarica .tex", st.session_state.latex_generato, f"appunti_{datetime.date.today().strftime('%d_%m_%Y')}.tex")
                         with c_lat2:
                             st_copy_to_clipboard(st.session_state.latex_generato, "📋 Copia LaTeX")
+                        st.markdown("<div style='height: 140px;'></div>", unsafe_allow_html=True)
         else:
             render_version_navigation_bar("canvas_no_tab_md")
             st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
             cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "", default_width="50%").strip()
 
-            canvas_scroll_area = st.container(border=False)
+            canvas_scroll_area = st.container(height=650, border=False)
             with canvas_scroll_area:
                 if st.session_state.canvas_edit_mode_toggle:
-                    edited_text_canvas = st.text_area(
-                        "Modifica direttamente il testo nel Canvas:",
-                        value=st.session_state.appunti_generati,
-                        height=560,
-                        key="markdown_editor_area_canvas",
-                        on_change=update_appunti_from_editor
-                    )
-                    st.session_state.appunti_generati = edited_text_canvas
+                    escaped_text = html.escape(st.session_state.appunti_generati or "")
+                    st.markdown(f"""
+                        <textarea id="canvas-inplace-editor" class="raw-markdown-editor" spellcheck="false" style="
+                            width: 100%;
+                            min-height: 580px;
+                            height: 600px;
+                            background-color: #1e1e1e;
+                            color: #e2e8f0;
+                            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+                            font-size: 14px;
+                            line-height: 1.6;
+                            padding: 16px;
+                            border: 1.5px solid #383838;
+                            border-radius: 8px;
+                            white-space: pre;
+                            outline: none;
+                            resize: vertical;
+                            box-sizing: border-box;
+                        ">{escaped_text}</textarea>
+                        <div style="height: 140px;"></div>
+                    """, unsafe_allow_html=True)
                 else:
                     canvas_placeholder = st.empty()
-                    canvas_placeholder.markdown(cleaned_render_canvas, unsafe_allow_html=True)
+                    canvas_placeholder.markdown(cleaned_render_canvas + "\n\n<div style='height: 140px;'></div>", unsafe_allow_html=True)
 
         inject_image_paste_drop_js()
 
@@ -1898,7 +2172,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             function getChatBox() {{
                 const cols = getTopLevelCols();
                 const chatCol = cols[0];
-                return chatCol; // Ritorna l'intera colonna che ha overflow-y: auto
+                return chatCol;
             }}
 
             function autoScrollChatToBottom(force) {{
@@ -1906,14 +2180,10 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 if (!chatBox) return;
 
                 if (force || userIsNearBottom) {{
-                    // Ritardo per permettere al browser di aggiornare l'altezza del DOM
+                    // Scorre solo il riquadro della chat a sinistra senza toccare la pagina o il canvas
                     setTimeout(function() {{
                         chatBox.scrollTop = chatBox.scrollHeight;
-                        const spacer = pDoc.getElementById('chat-bottom-spacer');
-                        if (spacer) {{
-                            spacer.scrollIntoView({{ behavior: 'instant', block: 'end' }});
-                        }}
-                    }}, 50);
+                    }}, 40);
                 }}
             }}
 
@@ -2181,21 +2451,31 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             st.session_state.stream_version_created = False
             st.rerun()
 
-
-
+    # Esegui lo script di blocco scroll come ULTIMO elemento della pagina per evitare che Streamlit spinga in giù il layout
+    import streamlit.components.v1 as components
+    components.html(canvas_js, height=0)
 
 # ==============================================================================
 # PAGINA PRINCIPALE: CONFIGURAZIONE FORM & GENERAZIONE
 # ==============================================================================
 else:
-    # --- CLEANUP: Rimuove la chatbar personalizzata se l'utente torna alla home ---
+    # --- CLEANUP: Rimuove la chatbar personalizzata e sblocca lo scroll se l'utente torna alla home ---
     cleanup_js = """
     <script>
     (function() {
+        const pWin = window.parent || window;
         const pDoc = window.parent.document;
+        
+        // 1. Rimuove la chatbar
         const bar = pDoc.getElementById('custom-chatgpt-bar');
         if (bar) {
             bar.remove();
+        }
+        
+        // 2. Sblocca lo scroll che era stato bloccato dal Canvas
+        if (pWin.__canvasScrollLock) {
+            clearInterval(pWin.__canvasScrollLock);
+            pWin.__canvasScrollLock = null;
         }
     })();
     </script>
@@ -2256,7 +2536,7 @@ else:
 
     col_title_main, col_btn_news = st.columns([4, 1])
     with col_title_main:
-        st.title("🎓 Da Vimeo ad Appunti & Notion")
+        st.title("🎓 Narderio Transcription")
     with col_btn_news:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("✨ Scopri le Novità", use_container_width=True):
@@ -2830,14 +3110,10 @@ else:
             for i, tab_name in enumerate(tabs_to_show):
                 with tabs[i]:
                     if "Appunti" in tab_name:
-                        sub_col1, sub_col2, sub_col3 = st.columns([2, 1.5, 2.5])
-                        with sub_col1:
-                            view_mode = st.radio("Modalità visualizzazione:", ["👁️ Anteprima Formattata", "✏️ Modifica Markdown"], horizontal=True, key="standard_view_radio")
-                        with sub_col2:
-                            st.write("")
+                        col_versions, col_actions = st.columns([1.8, 2.2])
+                        with col_versions:
                             render_version_navigation_bar("main_tab")
-                        with sub_col3:
-                            st.write("")
+                        with col_actions:
                             btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 1])
                             with btn_c1:
                                 if st.button("🎨 Studio Canvas", type="primary", use_container_width=True, key="btn_open_canvas_chat"):
@@ -2851,21 +3127,10 @@ else:
 
                         st.divider()
 
-                        if check_has_unsaved_changes():
-                            st.warning("⚠️ **Modifiche non salvate**: hai modificato gli appunti. Ricordati di salvarli su Notion (pulsante **📤 Salva su Notion**) per non perdere le modifiche.")
-
-                        if view_mode == "✏️ Modifica Markdown":
-                            edited_text = st.text_area(
-                                "Modifica liberamente il testo Markdown dell'intera pagina:",
-                                value=st.session_state.appunti_generati,
-                                height=550,
-                                key="markdown_editor_area",
-                                on_change=update_appunti_from_editor
-                            )
-                            st.session_state.appunti_generati = edited_text
-                        else:
+                        appunti_container = st.container(border=False)
+                        with appunti_container:
                             cleaned_render = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati, default_width="30%")
-                            st.markdown(cleaned_render, unsafe_allow_html=True)
+                            st.markdown(cleaned_render + "\n\n<div style='height: 140px;'></div>", unsafe_allow_html=True)
 
                         st.divider()
                         
