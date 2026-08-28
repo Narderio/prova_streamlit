@@ -73,28 +73,39 @@ def add_note_version(new_notes):
     st.session_state.current_version_index = new_idx
     st.session_state.appunti_generati = new_notes
     st.session_state._last_valid_appunti = new_notes
+    st.session_state._version_just_switched = True
+    st.session_state._version_switch_timestamp = time.time()
+    
     safe_set_session_state("markdown_editor_area", new_notes)
     safe_set_session_state("markdown_editor_area_canvas", new_notes)
-    st.session_state._version_just_switched = True
+    safe_set_session_state("notes_sync_bridge_input", new_notes)
 
     new_ver_str = str(new_idx + 1)
     safe_sync_version_tabs(new_ver_str)
 
 def switch_note_version(target_index):
-    """Cambia la versione attiva degli appunti."""
+    """Cambia la versione attiva degli appunti in modo atomico."""
     if 'notes_versions' in st.session_state and 0 <= target_index < len(st.session_state.notes_versions):
         st.session_state.current_version_index = target_index
         selected_notes = st.session_state.notes_versions[target_index]
         st.session_state.appunti_generati = selected_notes
         st.session_state._last_valid_appunti = selected_notes
+        st.session_state._version_just_switched = True
+        st.session_state._version_switch_timestamp = time.time()
+        
         safe_set_session_state("markdown_editor_area", selected_notes)
         safe_set_session_state("markdown_editor_area_canvas", selected_notes)
-        st.session_state._version_just_switched = True
+        safe_set_session_state("notes_sync_bridge_input", selected_notes)
 
         new_ver_str = str(target_index + 1)
         safe_sync_version_tabs(new_ver_str)
 
 def update_appunti_from_editor():
+    if st.session_state.get("_version_just_switched", False):
+        return
+    if time.time() - st.session_state.get("_version_switch_timestamp", 0) < 0.8:
+        return
+        
     updated_val = None
     if "markdown_editor_area" in st.session_state and st.session_state.markdown_editor_area:
         updated_val = st.session_state.markdown_editor_area
@@ -102,12 +113,13 @@ def update_appunti_from_editor():
         updated_val = st.session_state.markdown_editor_area_canvas
     
     if updated_val:
-        st.session_state.appunti_generati = updated_val
-        st.session_state._last_valid_appunti = updated_val
-        if 'notes_versions' in st.session_state and st.session_state.notes_versions:
-            idx = st.session_state.get('current_version_index', 0)
-            if 0 <= idx < len(st.session_state.notes_versions):
+        idx = st.session_state.get('current_version_index', 0)
+        versions = st.session_state.get('notes_versions', [])
+        if 0 <= idx < len(versions):
+            if versions[idx] != updated_val:
                 st.session_state.notes_versions[idx] = updated_val
+                st.session_state.appunti_generati = updated_val
+                st.session_state._last_valid_appunti = updated_val
 
 def render_version_navigation_bar(key_prefix=""):
     versions = st.session_state.get("notes_versions", [])
@@ -127,10 +139,16 @@ def render_version_navigation_bar(key_prefix=""):
         widget_key = f"{key_prefix}_ver_segmented_tab"
         target_str = options[current_idx]
         
-        # Sincronizza la chiave del widget solo se non esiste, non è tra le opzioni o se c'è stato un cambio programmatico di versione
+        # Sincronizza la chiave del widget solo se non esiste, non è tra le opzioni o se c'è stato un cambio di versione
         if widget_key not in st.session_state or st.session_state[widget_key] not in options or st.session_state.get("_version_just_switched", False):
             safe_set_session_state(widget_key, target_str)
-            st.session_state._version_just_switched = False
+
+        def on_segmented_version_change():
+            val = st.session_state.get(widget_key)
+            if val and val in options:
+                new_i = int(val) - 1
+                if new_i != st.session_state.get("current_version_index"):
+                    switch_note_version(new_i)
 
         selected_v = st.segmented_control(
             "Versione",
@@ -138,7 +156,8 @@ def render_version_navigation_bar(key_prefix=""):
             selection_mode="single",
             required=True,
             label_visibility="collapsed",
-            key=widget_key
+            key=widget_key,
+            on_change=on_segmented_version_change
         )
         
         if selected_v and selected_v in options:
@@ -428,17 +447,27 @@ if 'canvas_width_pct' not in st.session_state:
 
 # --- SCRIPT JAVASCRIPT UNIVERSALE PER INSERIMENTO E RIDIMENSIONAMENTO IMMAGINI (DRAG-TO-RESIZE) ---
 def handle_notes_sync_bridge():
+    if st.session_state.get("_version_just_switched", False):
+        st.session_state._version_just_switched = False
+        return
+    if time.time() - st.session_state.get("_version_switch_timestamp", 0) < 0.8:
+        return
+
     new_val = st.session_state.get("notes_sync_bridge_input", "")
-    if new_val and new_val.strip() and new_val != st.session_state.get("appunti_generati"):
-        st.session_state.appunti_generati = new_val
-        st.session_state._last_valid_appunti = new_val
-        if "markdown_editor_area_canvas" in st.session_state:
-            st.session_state.markdown_editor_area_canvas = new_val
-        if "markdown_editor_area" in st.session_state:
-            st.session_state.markdown_editor_area = new_val
-        cur_idx = st.session_state.get("current_version_index", 0)
-        if "notes_versions" in st.session_state and 0 <= cur_idx < len(st.session_state.notes_versions):
+    if not new_val or not new_val.strip():
+        return
+
+    cur_idx = st.session_state.get("current_version_index", 0)
+    versions = st.session_state.get("notes_versions", [])
+    if 0 <= cur_idx < len(versions):
+        if versions[cur_idx] != new_val:
             st.session_state.notes_versions[cur_idx] = new_val
+            st.session_state.appunti_generati = new_val
+            st.session_state._last_valid_appunti = new_val
+            if "markdown_editor_area_canvas" in st.session_state:
+                st.session_state.markdown_editor_area_canvas = new_val
+            if "markdown_editor_area" in st.session_state:
+                st.session_state.markdown_editor_area = new_val
 
 def render_notes_sync_bridge():
     st.markdown("""
@@ -1141,13 +1170,29 @@ def inject_scroll_sync_mode_js():
                     restoreEditor(ed);
                 }
 
+                // Se il bridge è cambiato dall'esterno (es. cambio versione o elaborazione AI), aggiorna l'editor
+                const bridge = pDoc.querySelector('textarea[aria-label="__notes_sync_bridge__"]');
+                if (bridge) {
+                    const bridgeVal = bridge.value || '';
+                    if (pWin.__lastSyncedBridgeVal === undefined) {
+                        pWin.__lastSyncedBridgeVal = bridgeVal;
+                    }
+                    if (pWin.__lastSyncedBridgeVal !== bridgeVal) {
+                        pWin.__lastSyncedBridgeVal = bridgeVal;
+                        if (ed.value !== bridgeVal) {
+                            ed.value = bridgeVal;
+                        }
+                    }
+                }
+
                 if (!ed.__boundSync) {
                     ed.__boundSync = true;
-                    const syncToBridge = function() {
+                    const syncToBridge = function(e) {
                         const bridge = pDoc.querySelector('textarea[aria-label="__notes_sync_bridge__"]');
                         if (bridge) {
                             const txt = ed.value || '';
                             if (bridge.value !== txt) {
+                                pWin.__lastSyncedBridgeVal = txt;
                                 const lastValue = bridge.value;
                                 
                                 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, 'value').set;
@@ -1164,7 +1209,9 @@ def inject_scroll_sync_mode_js():
                                 
                                 bridge.dispatchEvent(new Event('input', { bubbles: true }));
                                 bridge.dispatchEvent(new Event('change', { bubbles: true }));
-                                bridge.dispatchEvent(new Event('blur', { bubbles: true }));
+                                if (e && e.type === 'blur') {
+                                    bridge.dispatchEvent(new Event('blur', { bubbles: true }));
+                                }
                             }
                         }
                     };
