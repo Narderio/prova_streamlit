@@ -263,6 +263,8 @@ if 'lesson_date_input' not in st.session_state:
     st.session_state.lesson_date_input = datetime.date.today()
 if '_last_saved_notion_notes' not in st.session_state:
     st.session_state._last_saved_notion_notes = None
+if '_should_scroll_to_results' not in st.session_state:
+    st.session_state._should_scroll_to_results = False
 
 def normalize_markdown_for_comparison(text):
     if text is None:
@@ -952,6 +954,39 @@ def inject_image_paste_drop_js():
     js_html = generate_image_paste_drop_js()
     if js_html:
         st.iframe(js_html, height=1)
+
+def inject_scroll_to_results():
+    """
+    Inietta uno script JavaScript per effettuare lo scroll automatico e fluido verso la sezione
+    degli appunti / trascrizione (id: 'selezione-appunti-trascrizione' o tab bar).
+    """
+    scroll_js = """
+    <script>
+    (function() {
+        const pDoc = window.parent.document || document;
+        const pWin = window.parent || window;
+        
+        let attempts = 0;
+        const maxAttempts = 30;
+        
+        function doScroll() {
+            attempts++;
+            const target = pDoc.getElementById('selezione-appunti-trascrizione') || 
+                           pDoc.querySelector('[data-testid="stTabs"]') || 
+                           pDoc.querySelector('.stTabs');
+            
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else if (attempts < maxAttempts) {
+                setTimeout(doScroll, 50);
+            }
+        }
+        
+        setTimeout(doScroll, 80);
+    })();
+    </script>
+    """
+    st.components.v1.html(scroll_js, height=0)
 
 
 # --- FRAGMENT NOTIFICA TOAST FLUTTUANTE CON BARRA DI CARICAMENTO ---
@@ -2393,6 +2428,7 @@ else:
                 vid_info = f" ({num_vids} parti video trascritte)" if num_vids > 1 else (" (1 video trascritto)" if num_vids == 1 else "")
                 st.session_state.notion_status = f"💡 Appunti e trascrizioni della '{chosen_lesson.get('title')}' caricati con successo da Notion{vid_info}!"
                 st.toast(f"✅ Appunti e trascrizioni di '{chosen_lesson.get('title')}' caricati!", icon="📚")
+                st.session_state._should_scroll_to_results = True
                 st.rerun()
 
         elif selected_lesson_label == NEW_LESSON_TAG and st.session_state.get("_active_loaded_lesson_id") is not None:
@@ -2565,6 +2601,7 @@ else:
                     st.session_state._last_saved_notion_notes = fetched_notes
                     st.session_state.notion_status = "💡 Appunti esistenti caricati automaticamente da Notion!"
                     st.session_state.notion_page_url = existing_notion_url
+                    st.session_state._should_scroll_to_results = True
                     
                     if not st.session_state.testo_estratto:
                         all_videos = cached_get_all_lesson_videos(
@@ -2619,6 +2656,7 @@ else:
                         if fetched_notes:
                             add_note_version(fetched_notes)
                             st.session_state._last_saved_notion_notes = fetched_notes
+                            st.session_state._should_scroll_to_results = True
                             
                     if not st.session_state.testo_estratto:
                         status.update(label="📄 Caricamento appunti da Notion ed estrazione trascrizioni in corso...")
@@ -2761,6 +2799,11 @@ else:
                 status.update(label="🎉 Elaborazione completata!", state="complete", expanded=False)
 
     if st.session_state.testo_estratto or st.session_state.appunti_generati:
+        st.markdown('<div id="selezione-appunti-trascrizione" style="scroll-margin-top: 30px;"></div>', unsafe_allow_html=True)
+        if st.session_state.get("_should_scroll_to_results", False):
+            inject_scroll_to_results()
+            st.session_state._should_scroll_to_results = False
+
         st.write("")
         render_active_background_operations_banner()
         is_saving = is_notion_saving_active()
