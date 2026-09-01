@@ -3,6 +3,8 @@ import urllib.error
 import json
 import re
 import os
+import unicodedata
+import difflib
 from google import genai
 from dotenv import load_dotenv
 
@@ -341,6 +343,11 @@ REGOLE TASSATIVE E INVIOLABILI:
    - È SEVERAMENTE VIETATO rimuovere, omettere, spostare arbitrariamente o alterare gli URL e i parametri di dimensione dei tag immagine quando riscrivi, sintetizzi, espandi, formatti o aggiorni il Canvas sotto <<<UPDATED_CANVAS>>>.
    - Le immagini sono parte integrante del materiale didattico e devono essere sempre preservate nella loro posizione originale rispetto al testo circostante.
 
+5. CITAZIONI E TESTO SELEZIONATO DALL'UTENTE:
+   - Se l'istruzione dell'utente include una citazione o testo di riferimento (es. `> ❝ **Testo selezionato:** ...`), considera tale frammento come il focus primario dell'intervento.
+   - Se l'utente chiede chiarimenti, spiegazioni o esempi su quel testo, fornisci la spiegazione didattica approfondita sotto <<<CHAT_RESPONSE>>> e mantieni TASSATIVAMENTE NO_CHANGE sotto <<<UPDATED_CANVAS>>>.
+   - Se l'utente chiede una modifica, riscrittura, semplificazione o espansione di quel passaggio, aggiorna l'intero documento sotto <<<UPDATED_CANVAS>>> modificando con precisione chirurgica quel punto specifico e preservando inalterato il resto del documento.
+
 FORMATO DI RISPOSTA TASSATIVO ED OBBLIGATORIO:
 <<<CHAT_RESPONSE>>>
 [Risposta conversazionale, spiegazioni dei concetti per lo studio o descrizione di cosa hai modificato]
@@ -465,5 +472,372 @@ ISTRUZIONE DELL'UTENTE:
     for chunk in response_stream:
         if chunk.text:
             yield chunk.text
+
+
+# ==============================================================================
+# MODALITÀ: MODIFICA MIRATA DI UNA SINGOLA SEZIONE ("MODIFICA SOLO QUESTO")
+# ==============================================================================
+
+CANVAS_TARGETED_EDIT_PROMPT = """Sei un assistente editoriale accademico di altissimo livello specializzato nella revisione e miglioramento mirato di appunti universitari.
+Il tuo compito è modificare, riscrivere o espandere ESCLUSIVAMENTE la specifica porzione di testo selezionata dall'utente all'interno del documento Canvas.
+
+CONTESTO COMPLETO:
+Ti viene fornito l'INTERO documento Canvas come riferimento per comprendere l'argomento trattato, la terminologia, lo stile didattico, la notazione e la coerenza complessiva.
+
+SEZIONE SPECIFICA DA MODIFICARE (TARGET):
+Ti viene fornito il testo esatto della porzione che l'utente intende modificare.
+
+REGOLE TASSATIVE:
+1. NON RISCRIVERE L'INTERO DOCUMENTO! Sotto <<<TARGETED_REPLACEMENT>>> devi fornire SOLAMENTE il testo sostitutivo pronto per rimpiazzare quel singolo passaggio nel documento.
+2. Il testo generato deve integrarsi alla perfezione e con continuità logica, stilistica e grammaticale con il testo che precede e segue nel documento.
+3. Se nella sezione target o nel contesto sono presenti formule matematiche LaTeX ($...$ o $$...$$), mantienile e formattale con la massima cura e correttezza.
+4. Se la sezione target contiene un tag immagine del tipo `![...](...)`, conservalo intatto salvo diversa e inequivocabile istruzione dell'utente.
+5. TITOLI E INTESTAZIONI: Se la sezione selezionata è un titolo o parte di un titolo (es. `## Titolo`), genera il nuovo titolo con un unico livello appropriato (es. `## Nuovo Titolo` o `### Nuovo Titolo`), evitando tassativamente cancelletti doppi o combinazioni anomale come `## ###`.
+6. Sotto <<<CHAT_RESPONSE>>> scrivi una spiegazione sintetica (1-2 frasi) in cui descrivi cordialmente cosa hai modificato nel passaggio.
+
+FORMATO DI RISPOSTA OBBLIGATORIO:
+<<<CHAT_RESPONSE>>>
+[Breve spiegazione sintetica di cosa hai modificato nel passaggio]
+<<<TARGETED_REPLACEMENT>>>
+[SOLO ED ESCLUSIVAMENTE il nuovo testo che sostituirà la porzione selezionata]"""
+
+TARGETED_SPLIT_REGEX = re.compile(
+    r'(?:'
+    r'<{1,4}\s*(?:TARGETED[_\s]*REPLACEMENT|TARGET[_\s]*REPLACEMENT|REPLACEMENT|'
+    r'MODIFICA[_\s]*MIRATA|TESTO[_\s]*SOSTITUTIVO|SEZIONE[_\s]*MODIFICATA|'
+    r'NUOVO[_\s]*TESTO|NEW[_\s]*TEXT)[:\s]*>{0,4}|'
+    r'(?:\*{1,2}|#{1,3})\s*(?:TARGETED[_\s]*REPLACEMENT|REPLACEMENT|MODIFICA[_\s]*MIRATA|'
+    r'TESTO[_\s]*SOSTITUTIVO|NUOVA[_\s]*VERSIONE|VERSIONE[_\s]*MODIFICATA)[:\s]*(?:\*{0,2})'
+    r')',
+    re.IGNORECASE
+)
+
+def parse_targeted_agent_response(raw_text: str) -> tuple[str, str | None]:
+    """
+    Separa la risposta per la modifica mirata in (chat_reply, replacement_part).
+    Restituisce:
+      - chat_reply (str): messaggio di spiegazione sintetica per la chat.
+      - replacement_part (str | None): solo il testo sostitutivo da iniettare nella porzione del Canvas.
+    Supporta tag standard, varianti Markdown, code block e formati alternativi in fallback.
+    """
+    if not raw_text:
+        return "", None
+
+    match = TARGETED_SPLIT_REGEX.search(raw_text)
+    if match:
+        chat_raw = raw_text[:match.start()]
+        replacement_raw = raw_text[match.end():].strip()
+        chat_reply = CHAT_TAG_REGEX.sub('', chat_raw).strip()
+        # Rimuove wrapping di blocco markdown se il modello ha racchiuso il replacement in un code block
+        if replacement_raw.startswith("```markdown") and replacement_raw.endswith("```"):
+            replacement_raw = replacement_raw[11:-3].strip()
+        elif replacement_raw.startswith("```latex") and replacement_raw.endswith("```"):
+            replacement_raw = replacement_raw[8:-3].strip()
+        elif replacement_raw.startswith("```") and replacement_raw.endswith("```"):
+            replacement_raw = replacement_raw[3:-3].strip()
+        return chat_reply or "Ho modificato la sezione selezionata.", replacement_raw
+
+    # Fallback 1: Blocco di codice ```markdown ... ``` o ```latex ... ``` presente nel testo
+    code_match = re.search(r'```(?:markdown|latex)?\s*\n(.*?)\n```', raw_text, re.DOTALL)
+    if code_match:
+        chat_raw = raw_text[:code_match.start()]
+        chat_reply = CHAT_TAG_REGEX.sub('', chat_raw).strip()
+        repl_raw = code_match.group(1).strip()
+        return chat_reply or "Ho modificato la sezione selezionata.", repl_raw
+
+    # Fallback 2: Se c'è <<<CHAT_RESPONSE>>> seguito da testo e poi da un doppio a capo
+    if CHAT_TAG_REGEX.search(raw_text):
+        cleaned = CHAT_TAG_REGEX.sub('', raw_text).strip()
+        parts = cleaned.split('\n\n', 1)
+        if len(parts) == 2 and len(parts[1].strip()) > 0:
+            return parts[0].strip(), parts[1].strip()
+
+    # Fallback 3: Riconoscimento prima riga discorsiva seguita da testo modificato
+    cleaned = raw_text.strip()
+    if '\n\n' in cleaned:
+        first_line, rest = cleaned.split('\n\n', 1)
+        if len(first_line) < 160 and any(w in first_line.lower() for w in ["ho ", "ecco", "modificato", "aggiornato", "sostituito", "riscritto", "corretto"]):
+            return first_line.strip(), rest.strip()
+
+    return "Ho modificato la sezione selezionata.", cleaned if cleaned else None
+
+def extract_targeted_edit_request(user_prompt: str) -> tuple[str | None, str]:
+    """
+    Verifica se il messaggio dell'utente richiede una modifica mirata di una sezione.
+    Riconosce i marcatori inseriti dall'interfaccia:
+    > 🎯 **[MODIFICA MIRATA SEZIONE]**
+    > riga 1
+    > riga 2
+
+    istruzione utente...
+
+    Restituisce tupla: (target_section, clean_instruction)
+    Se non è una modifica mirata, target_section è None e clean_instruction è user_prompt.
+    """
+    if not user_prompt or ("MODIFICA MIRATA SEZIONE" not in user_prompt and "MODIFICA SEZIONE" not in user_prompt):
+        return None, user_prompt
+
+    lines = user_prompt.splitlines()
+    target_lines = []
+    instruction_lines = []
+    is_in_quote = False
+    quote_finished = False
+
+    for line in lines:
+        stripped = line.strip()
+        if "MODIFICA MIRATA SEZIONE" in stripped or "MODIFICA SEZIONE" in stripped:
+            is_in_quote = True
+            continue
+        if is_in_quote and not quote_finished:
+            if stripped.startswith('>'):
+                content = stripped.lstrip('>').strip()
+                target_lines.append(content)
+            elif stripped == '':
+                if target_lines and target_lines[-1] != '':
+                    target_lines.append('')
+            else:
+                quote_finished = True
+                instruction_lines.append(line)
+        else:
+            instruction_lines.append(line)
+
+    while target_lines and not target_lines[-1]:
+        target_lines.pop()
+
+    target_section = "\n".join(target_lines).strip() if target_lines else None
+    clean_instruction = "\n".join(instruction_lines).strip() or "Migliora e aggiorna questo passaggio."
+    
+    return target_section, clean_instruction
+
+def _normalize_char_for_proj(c: str) -> str:
+    nfd = unicodedata.normalize('NFD', c.lower())
+    return ''.join(ch for ch in nfd if unicodedata.category(ch) != 'Mn')
+
+def replace_section_in_markdown(full_text: str, target_section: str, replacement: str) -> tuple[str, bool]:
+    """
+    Sostituisce con precisione e resilienza estrema la porzione target_section all'interno di full_text.
+    Supera tutte le discrepanze tra anteprima HTML e Markdown sorgente:
+    - Grassetto, corsivo, apici e pedici (*, **, _, `)
+    - Formule matematiche LaTeX ($ e $$)
+    - Punteggiatura tipografica (virgolette smart, trattini en/em-dash)
+    - Spaziature, ritorni a capo multipli e indentazioni
+    - Titoli ed intestazioni (#), prevenendo duplicazioni (es. '## ###')
+    Restituisce: (nuovo_full_text, successo_bool)
+    """
+    if not full_text or target_section is None:
+        return full_text, False
+
+    target_clean = target_section.strip()
+    if not target_clean:
+        return full_text, False
+
+    def _apply_replacement_with_heading_check(text: str, start_idx: int, end_idx: int, repl: str) -> str:
+        line_start = text.rfind('\n', 0, start_idx) + 1
+        prefix_on_line = text[line_start:start_idx]
+        
+        # Se prima della porzione trovata sulla riga ci sono solo cancelletti e spazi (es. '## ')
+        # e il testo sostitutivo inizia a sua volta con uno o più cancelletti (es. '### Titolo' o '## Titolo')
+        if re.match(r'^\s*#{1,6}\s*$', prefix_on_line) and repl.lstrip().startswith('#'):
+            # Sostituiamo partendo dall'inizio della riga per evitare la duplicazione dei cancelletti
+            res = text[:line_start] + repl + text[end_idx:]
+        else:
+            res = text[:start_idx] + repl + text[end_idx:]
+            
+        # Pulizia globale di sicurezza contro cancelletti doppi/multipli a inizio riga (es. '## ### ')
+        res = re.sub(r'(?m)^(\s*#{1,6})\s+(#{1,6}\s+)', r'\2', res)
+        return res
+
+    # 1. Ricerca esatta (string match diretto)
+    pos = full_text.find(target_clean)
+    if pos != -1:
+        new_text = _apply_replacement_with_heading_check(full_text, pos, pos + len(target_clean), replacement)
+        return new_text, True
+
+    # 2. Ricerca normalizzata su spazi, ritorni a capo e punteggiatura tipografica
+    norm_quotes_target = target_clean.replace('“', '"').replace('”', '"').replace('’', "'").replace('‘', "'").replace('–', '-').replace('—', '-').replace('\u00a0', ' ')
+    words = norm_quotes_target.split()
+    if words:
+        escaped_words = [re.escape(w) for w in words]
+        pattern_str = r'\s+'.join(escaped_words)
+        try:
+            pattern = re.compile(pattern_str, re.DOTALL)
+            m = pattern.search(full_text)
+            if m:
+                new_text = _apply_replacement_with_heading_check(full_text, m.start(), m.end(), replacement)
+                return new_text, True
+        except Exception:
+            pass
+
+    # 3. Ricerca tollerante alla formattazione Markdown inline (*, **, _, `, ecc.)
+    if len(words) >= 2:
+        delim = r'[\s*_~`\[\]()$>#\-=|]+'
+        w_pats = [r'[*_~`]*' + re.escape(w.strip('*_~`"\'')) + r'[*_~`]*' for w in words if w.strip('*_~`"\'')]
+        if len(w_pats) >= 2:
+            try:
+                pattern = re.compile(delim.join(w_pats), re.DOTALL)
+                m = pattern.search(full_text)
+                if m:
+                    new_text = _apply_replacement_with_heading_check(full_text, m.start(), m.end(), replacement)
+                    return new_text, True
+            except Exception:
+                pass
+
+    # 4. Ricerca per proiezione alfanumerica (indipendente al 100% da markdown, KaTeX e formattazione)
+    proj_chars, proj_indices = [], []
+    for i, c in enumerate(full_text):
+        if c.isalnum():
+            proj_chars.append(_normalize_char_for_proj(c))
+            proj_indices.append(i)
+
+    proj_full = "".join(proj_chars)
+    proj_target = "".join(_normalize_char_for_proj(c) for c in target_clean if c.isalnum())
+
+    if proj_target and len(proj_target) >= 3:
+        p_pos = proj_full.find(proj_target)
+        if p_pos != -1:
+            s_orig = proj_indices[p_pos]
+            e_orig = proj_indices[p_pos + len(proj_target) - 1] + 1
+            # Assorbe formattazioni markdown aperte/chiuse adiacenti (es. ** o *)
+            while s_orig > 0 and full_text[s_orig - 1] in '*_~`':
+                s_orig -= 1
+            while e_orig < len(full_text) and full_text[e_orig] in '*_~`':
+                e_orig += 1
+            new_text = _apply_replacement_with_heading_check(full_text, s_orig, e_orig, replacement)
+            return new_text, True
+
+        # 4b. Anchor matching su selezioni estese (ancore testa e coda di 12 caratteri alfanumerici)
+        if len(proj_target) >= 16:
+            head = proj_target[:12]
+            tail = proj_target[-12:]
+            h_pos = proj_full.find(head)
+            if h_pos != -1:
+                t_pos = proj_full.find(tail, h_pos)
+                if t_pos != -1:
+                    span_len = t_pos + len(tail) - h_pos
+                    if 0.65 * len(proj_target) <= span_len <= 1.35 * len(proj_target):
+                        s_orig = proj_indices[h_pos]
+                        e_orig = proj_indices[t_pos + len(tail) - 1] + 1
+                        while s_orig > 0 and full_text[s_orig - 1] in '*_~`':
+                            s_orig -= 1
+                        while e_orig < len(full_text) and full_text[e_orig] in '*_~`':
+                            e_orig += 1
+                        new_text = _apply_replacement_with_heading_check(full_text, s_orig, e_orig, replacement)
+                        return new_text, True
+
+    # 5. Distinctive Token Anchor & Sequence Matching
+    # Risolve discrepanze con formule matematiche LaTeX complesse (\frac, \sqrt, \int), KaTeX MathML, apostrofi e liste numerate
+    STOP_WORDS = {'il', 'la', 'lo', 'i', 'gli', 'le', 'un', 'uno', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'e', 'o', 'se', 'ma', 'ed', 'ad'}
+    target_tokens = [m.group().lower() for m in re.finditer(r'[a-zA-Z0-9àèéìòùÀÈÉÌÒÙ]{2,}', norm_quotes_target)]
+    full_tokens = [(m.start(), m.end(), m.group().lower()) for m in re.finditer(r'[a-zA-Z0-9àèéìòùÀÈÉÌÒÙ]{2,}', full_text)]
+
+    if target_tokens and full_tokens:
+        T = len(target_tokens)
+        dist_heads = [t for t in target_tokens[:min(4, T)] if t not in STOP_WORDS] or target_tokens[:1]
+        dist_tails = [t for t in target_tokens[max(0, T - 4):] if t not in STOP_WORDS] or target_tokens[-1:]
+
+        head_cand = [i for i, t in enumerate(full_tokens) if t[2] in dist_heads]
+        tail_cand = [j for j, t in enumerate(full_tokens) if t[2] in dist_tails]
+
+        best_score = 0
+        best_span = None
+
+        for h_i in head_cand:
+            for t_j in tail_cand:
+                if t_j >= h_i:
+                    span_tokens = [full_tokens[k][2] for k in range(h_i, t_j + 1)]
+                    score = difflib.SequenceMatcher(None, target_tokens, span_tokens).ratio()
+                    if score > best_score:
+                        best_score = score
+                        best_span = (full_tokens[h_i][0], full_tokens[t_j][1])
+
+        if best_span and best_score >= 0.40:
+            s_orig, e_orig = best_span
+            while s_orig > 0 and full_text[s_orig - 1] in '*_~`':
+                s_orig -= 1
+            while e_orig < len(full_text) and full_text[e_orig] in '*_~`':
+                e_orig += 1
+            return _apply_replacement_with_heading_check(full_text, s_orig, e_orig, replacement), True
+
+        # Fallback: Sliding window
+        min_w = max(1, int(T * 0.5))
+        max_w = min(len(full_tokens), int(T * 2.5) + 1)
+        for i in range(0, len(full_tokens)):
+            for w_len in range(min_w, min(max_w, len(full_tokens) - i + 1)):
+                j = i + w_len
+                span_tokens = [full_tokens[k][2] for k in range(i, j)]
+                score = difflib.SequenceMatcher(None, target_tokens, span_tokens).ratio()
+                if score > best_score:
+                    best_score = score
+                    best_span = (full_tokens[i][0], full_tokens[j-1][1])
+
+        if best_span and best_score >= 0.40:
+            s_orig, e_orig = best_span
+            while s_orig > 0 and full_text[s_orig - 1] in '*_~`':
+                s_orig -= 1
+            while e_orig < len(full_text) and full_text[e_orig] in '*_~`':
+                e_orig += 1
+            return _apply_replacement_with_heading_check(full_text, s_orig, e_orig, replacement), True
+
+    # 6. Ricerca basata su prime e ultime parole (per selezioni ampie)
+    if len(words) >= 6:
+        first_part = r'\s+'.join([re.escape(w.strip('*_~`"\'')) for w in words[:3]])
+        last_part = r'\s+'.join([re.escape(w.strip('*_~`"\'')) for w in words[-3:]])
+        try:
+            pattern = re.compile(f"{first_part}.*?{last_part}", re.DOTALL)
+            m = pattern.search(full_text)
+            if m:
+                new_text = _apply_replacement_with_heading_check(full_text, m.start(), m.end(), replacement)
+                return new_text, True
+        except Exception:
+            pass
+
+    return full_text, False
+
+def agent_edit_targeted_stream(current_markdown, target_section, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
+    """
+    Generatore streaming per la modifica mirata di una singola sezione degli appunti.
+    Fornisce l'intero documento Canvas come contesto, ma istruisce il modello a generare SOLO
+    il testo sostitutivo per la sezione selezionata.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("Chiave API di Google non trovata. Configura GOOGLE_API_KEY.")
+
+    client = genai.Client(api_key=api_key)
+
+    history_formatted = ""
+    if chat_history:
+        for msg in chat_history[-6:]:
+            role = "Utente" if msg.get("role") == "user" else "Assistente"
+            history_formatted += f"{role}: {msg.get('content')}\n"
+
+    transcript_section = f"\n\nTRASCRIZIONE GREZZA ORIGINALE (CONTESTO INTEGRATIVO):\n---\n{raw_transcript}\n---" if raw_transcript else ""
+
+    user_payload = f"""DOCUMENTO CANVAS COMPLETO (SOLO PER CONTESTO E COERENZA):
+---
+{current_markdown}
+---{transcript_section}
+
+SEZIONE DA MODIFICARE / SOSTITUIRE (TARGET):
+<<<TARGET_SECTION>>>
+{target_section}
+<<<END_TARGET_SECTION>>>
+
+STORICO DIALOGO RECENTE:
+{history_formatted if history_formatted else '(Nessun messaggio precedente)'}
+
+ISTRUZIONE DELL'UTENTE PER QUESTA SEZIONE:
+{user_instruction}"""
+
+    gemini_rate_tracker.log_request()
+    response_stream = client.models.generate_content_stream(
+        model=model_name,
+        contents=f"{CANVAS_TARGETED_EDIT_PROMPT}\n\n{user_payload}"
+    )
+
+    for chunk in response_stream:
+        if chunk.text:
+            yield chunk.text
+
 
 

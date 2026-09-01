@@ -5,6 +5,8 @@ import datetime
 import threading
 import importlib
 import html
+import re
+import json
 from dotenv import load_dotenv
 
 import backend
@@ -18,7 +20,13 @@ importlib.reload(backend)
 importlib.reload(notion_helper)
 importlib.reload(supabase_client)
 
-from backend import download_and_process, fetch_aggregated_transcript, generate_notes, generate_latex, export_to_notion, extract_vimeo_ids, agent_edit_notes, agent_edit_notes_stream, parse_agent_response, DEFAULT_PROMPT
+from backend import (
+    download_and_process, fetch_aggregated_transcript, generate_notes, generate_latex,
+    export_to_notion, extract_vimeo_ids, agent_edit_notes, agent_edit_notes_stream,
+    parse_agent_response, DEFAULT_PROMPT,
+    agent_edit_targeted_stream, parse_targeted_agent_response,
+    extract_targeted_edit_request, replace_section_in_markdown
+)
 
 load_dotenv()
 
@@ -71,6 +79,7 @@ def add_note_version(new_notes):
     st.session_state.notes_versions.append(new_notes)
     new_idx = len(st.session_state.notes_versions) - 1
     st.session_state.current_version_index = new_idx
+    st.session_state.force_version_sync = new_idx
     st.session_state.appunti_generati = new_notes
     st.session_state._last_valid_appunti = new_notes
     st.session_state._version_just_switched = True
@@ -87,6 +96,7 @@ def switch_note_version(target_index):
     """Cambia la versione attiva degli appunti in modo atomico."""
     if 'notes_versions' in st.session_state and 0 <= target_index < len(st.session_state.notes_versions):
         st.session_state.current_version_index = target_index
+        st.session_state.force_version_sync = target_index
         selected_notes = st.session_state.notes_versions[target_index]
         st.session_state.appunti_generati = selected_notes
         st.session_state._last_valid_appunti = selected_notes
@@ -139,8 +149,15 @@ def render_version_navigation_bar(key_prefix=""):
         widget_key = f"{key_prefix}_ver_segmented_tab"
         target_str = options[current_idx]
         
-        # Sincronizza la chiave del widget solo se non esiste, non è tra le opzioni o se c'è stato un cambio di versione
-        if widget_key not in st.session_state or st.session_state[widget_key] not in options or st.session_state.get("_version_just_switched", False):
+        # Se è stata richiesta una sincronizzazione forzata della versione dal codice (es. nuova versione creata o switch)
+        forced_idx = st.session_state.get("force_version_sync")
+        if forced_idx is not None and 0 <= forced_idx < len(options):
+            st.session_state.current_version_index = forced_idx
+            target_str = options[forced_idx]
+            safe_set_session_state(widget_key, target_str)
+            # Consuma la richiesta di sync forzato
+            st.session_state.force_version_sync = None
+        elif widget_key not in st.session_state or st.session_state[widget_key] not in options:
             safe_set_session_state(widget_key, target_str)
 
         def on_segmented_version_change():
@@ -160,6 +177,10 @@ def render_version_navigation_bar(key_prefix=""):
             on_change=on_segmented_version_change
         )
         
+        # Consuma il flag _version_just_switched in modo che non persista nei render successivi
+        if st.session_state.get("_version_just_switched", False):
+            st.session_state._version_just_switched = False
+
         if selected_v and selected_v in options:
             new_idx = int(selected_v) - 1
             if new_idx < len(versions) and new_idx != st.session_state.get("current_version_index"):
@@ -289,9 +310,15 @@ if '_should_scroll_to_results' not in st.session_state:
 def normalize_markdown_for_comparison(text):
     if text is None:
         return ""
-    return str(text).replace("\r\n", "\n").strip()
+    t = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in t.splitlines()]
+    return "\n".join(lines).strip()
 
 def check_has_unsaved_changes():
+    # Se un salvataggio su Notion è già in corso in background, non mostrare l'avviso
+    if is_notion_saving_active():
+        return False
+
     curr_notes = st.session_state.get("appunti_generati")
     if not curr_notes or not str(curr_notes).strip():
         return False
@@ -312,6 +339,7 @@ def is_notion_saving_active():
             st.session_state.notion_save_thread = None
             st.session_state.notion_status = "✅ Pagina aggiornata su Notion con successo!"
             st.toast("✅ Appunti salvati su Notion con successo!", icon="🎉")
+            st.rerun()
             return False
     return False
 
@@ -383,6 +411,18 @@ def save_current_notes_to_notion():
         st.toast("⏳ Salvataggio su Notion già in corso...", icon="⚠️")
         return
 
+    # Sincronizza lo stato più recente degli appunti
+    cur_idx = st.session_state.get("current_version_index", 0)
+    versions = st.session_state.get("notes_versions", [])
+    bridge_val = st.session_state.get("notes_sync_bridge_input")
+    if 0 <= cur_idx < len(versions):
+        if bridge_val and str(bridge_val).strip() and bridge_val != versions[cur_idx]:
+            versions[cur_idx] = bridge_val
+            st.session_state.appunti_generati = bridge_val
+            st.session_state._last_valid_appunti = bridge_val
+        elif st.session_state.get("appunti_generati"):
+            versions[cur_idx] = st.session_state.appunti_generati
+
     # Priorità assoluta alla lezione esplicitamente selezionata / attiva
     target_pid = st.session_state.get("_active_loaded_lesson_id") or st.session_state.get("current_notion_page_id")
     notion_token = os.getenv("NOTION_API_KEY")
@@ -400,8 +440,15 @@ def save_current_notes_to_notion():
         st.session_state._active_loaded_lesson_id = target_pid
 
     if target_pid:
-        markdown_snapshot = str(st.session_state.appunti_generati)
+        markdown_snapshot = str(st.session_state.appunti_generati or "")
         st.session_state._last_saved_notion_notes = markdown_snapshot
+        st.session_state._last_saved_version_index = cur_idx
+        safe_set_session_state("notes_sync_bridge_input", markdown_snapshot)
+        safe_set_session_state("markdown_editor_area", markdown_snapshot)
+        safe_set_session_state("markdown_editor_area_canvas", markdown_snapshot)
+        st.session_state._version_just_switched = True
+        st.session_state._version_switch_timestamp = time.time()
+
         bg_thread = threading.Thread(
             target=notion_helper.update_notion_page_in_place,
             args=(target_pid, markdown_snapshot, notion_token),
@@ -1022,11 +1069,40 @@ def inject_scroll_sync_mode_js():
     """
     Sincronizza le modifiche di testo dell'editor HTML verso Streamlit e mantiene con precisione la posizione di lettura tra Anteprima e Modifica.
     """
-    sync_js = """
+    sync_js = r"""
     <script>
     (function() {
         const pDoc = window.parent.document || document;
         const pWin = window.parent || window;
+
+        function getCanvasPreviewContainer() {
+            const anchor = pDoc.getElementById('canvas-scroll-anchor');
+            if (anchor) {
+                let p = anchor.parentElement;
+                while (p && p !== pDoc.body) {
+                    const style = pWin.getComputedStyle(p);
+                    const oy = style.overflowY || style.overflow;
+                    if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && p.clientHeight >= 200) {
+                        return p;
+                    }
+                    p = p.parentElement;
+                }
+            }
+            const col3 = pDoc.querySelector('div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3)');
+            if (col3) {
+                const divs = col3.querySelectorAll('div');
+                for (const d of divs) {
+                    const style = pWin.getComputedStyle(d);
+                    const oy = style.overflowY || style.overflow;
+                    if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && d.clientHeight >= 200 && d.clientHeight <= 1000) {
+                        if (d.querySelector('h1, h2, h3, p, li')) {
+                            return d;
+                        }
+                    }
+                }
+            }
+            return null;
+        }
 
         function getVisibleSnippet(container) {
             if (!container) return '';
@@ -1034,21 +1110,24 @@ def inject_scroll_sync_mode_js():
             const elements = container.querySelectorAll('h1, h2, h3, h4, h5, p, li, strong, code');
             for (const el of elements) {
                 const r = el.getBoundingClientRect();
-                // Find first element that is somewhat near the top of the container
-                if (r.top >= cRect.top - 10 && r.top <= cRect.top + 200) {
+                // Primo elemento vicino alla cima visibile del contenitore
+                if (r.top >= cRect.top - 15 && r.top <= cRect.top + 220) {
                     const txt = (el.innerText || el.textContent || '').trim();
-                    if (txt.length >= 6) return txt.substring(0, 30);
+                    if (txt.length >= 6) return txt.substring(0, 35);
                 }
             }
             return '';
         }
 
-        // Global scroll listener for Preview mode
+        // Listener di scroll per Anteprima: cattura SOLO dal pannello Canvas (colonna 3), MAI dalla chat!
         pDoc.addEventListener('scroll', function(e) {
             const el = e.target;
             if (!el || el === pDoc || el === pDoc.body || el === pDoc.documentElement) return;
-            if (el.tagName === 'TEXTAREA') return; // Handled separately
+            if (el.tagName === 'TEXTAREA') return;
             
+            const isInsideCanvas = el.closest('div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3)');
+            if (!isInsideCanvas) return;
+
             if (el.clientHeight >= 200 && el.clientHeight <= 1000) {
                 if (el.querySelector('h1, h2, h3, p, li')) {
                     const snip = getVisibleSnippet(el);
@@ -1060,24 +1139,74 @@ def inject_scroll_sync_mode_js():
         }, true);
 
         function saveEditorPos(ed) {
+            if (!ed) return;
             const val = ed.value || '';
+            if (!val.trim()) return;
+
+            const lines = val.split('\n');
+            const totalLines = Math.max(1, lines.length);
+            const approxLineH = ed.scrollHeight > 0 ? (ed.scrollHeight / totalLines) : 22.4;
+
             const maxScroll = Math.max(1, ed.scrollHeight - ed.clientHeight);
             const ratio = ed.scrollTop / maxScroll;
             pWin.__readingRatio = ratio;
-            
-            // Find char index for the top visible line based on scroll
-            const totalLines = val.split('\\n').length;
-            // We use ed.scrollTop / ed.scrollHeight to estimate the visible line
-            const approxLine = Math.max(0, Math.floor((ed.scrollTop / (ed.scrollHeight || 1)) * totalLines));
-            const lines = val.split('\\n');
-            let charIdx = 0;
-            for (let i = 0; i < approxLine && i < lines.length; i++) {
-                charIdx += lines[i].length + 1;
+
+            // 1. Individua la riga attiva su cui è concentrata la lettura o il cursore
+            let activeLine = -1;
+            const selStart = ed.selectionStart;
+            if (typeof selStart === 'number' && selStart >= 0) {
+                const cursorLine = val.substring(0, selStart).split('\n').length - 1;
+                const topVisibleLine = Math.floor(ed.scrollTop / approxLineH);
+                const bottomVisibleLine = Math.ceil((ed.scrollTop + ed.clientHeight) / approxLineH);
+                if (cursorLine >= topVisibleLine && cursorLine <= bottomVisibleLine) {
+                    activeLine = cursorLine;
+                }
             }
-            
-            // Extract a snippet and remove markdown characters to match Anteprima's innerText
-            let snip = val.substring(charIdx, charIdx + 150).replace(/[#*`_\\[\\]()>\\-]/g, '').replace(/\\s+/g, ' ').trim();
-            if (snip.length >= 10) pWin.__readingSnippet = snip;
+
+            // Se il cursore non è visibile, prendi la riga a ~20% dell'altezza del viewport (dove si posa naturalmente lo sguardo)
+            if (activeLine === -1) {
+                const readingScrollPx = ed.scrollTop + Math.min(100, ed.clientHeight * 0.20);
+                activeLine = Math.max(0, Math.min(lines.length - 1, Math.floor(readingScrollPx / approxLineH)));
+            }
+
+            // 2. Cerca il landmark più significativo (priorità a Titoli Markdown #, ##, ### nel raggio di 4 righe)
+            let landmark = null;
+            for (const off of [0, 1, -1, 2, -2, 3, -3, 4, -4]) {
+                const idx = activeLine + off;
+                if (idx >= 0 && idx < lines.length) {
+                    const l = lines[idx].trim();
+                    if (l.startsWith('#')) {
+                        const clean = l.replace(/^#+\s*/, '').replace(/[\*\_`~\[\]]/g, '').trim();
+                        if (clean.length >= 3) {
+                            landmark = { type: 'heading', text: clean, line: idx };
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Se non ci sono titoli vicini, prendi la prima riga non vuota significativa
+            if (!landmark) {
+                for (const off of [0, 1, 2, -1, 3, -2, 4]) {
+                    const idx = activeLine + off;
+                    if (idx >= 0 && idx < lines.length) {
+                        const clean = lines[idx]
+                            .replace(/^[\*\-\+]\s*/, '')
+                            .replace(/^\d+\.\s*/, '')
+                            .replace(/^>\s*/, '')
+                            .replace(/[\*\_`~\[\]]/g, '')
+                            .replace(/<[^>]*>/g, '')
+                            .trim();
+                        if (clean.length >= 8) {
+                            landmark = { type: 'text', text: clean.substring(0, 50), line: idx };
+                            break;
+                        }
+                    }
+                }
+            }
+
+            pWin.__readingLandmark = landmark;
+            pWin.__readingSnippet = landmark ? landmark.text : '';
         }
 
         function restoreEditor(ed) {
@@ -1086,10 +1215,19 @@ def inject_scroll_sync_mode_js():
             const val = ed.value || '';
             let charPos = -1;
 
-            if (snippet && snippet.length >= 8) {
+            if (snippet && snippet.length >= 4) {
                 const searchSnip = snippet.substring(0, 20);
                 charPos = val.indexOf(searchSnip);
                 if (charPos === -1) charPos = val.indexOf(snippet.substring(0, 10));
+                if (charPos === -1) {
+                    const words = snippet.split(' ');
+                    for (const w of words) {
+                        if (w.length >= 4) {
+                            const idx = val.indexOf(w);
+                            if (idx !== -1) { charPos = idx; break; }
+                        }
+                    }
+                }
             }
             if (charPos === -1 && ratio > 0) {
                 charPos = Math.floor(ratio * val.length);
@@ -1097,66 +1235,130 @@ def inject_scroll_sync_mode_js():
 
             if (charPos >= 0) {
                 const applyEd = () => {
-                    const lines = val.substring(0, charPos).split('\\n').length;
-                    const totalLines = Math.max(1, val.split('\\n').length);
+                    const lines = val.substring(0, charPos).split('\n').length;
+                    const totalLines = Math.max(1, val.split('\n').length);
                     const approxLineH = ed.scrollHeight > 0 ? (ed.scrollHeight / totalLines) : 22;
                     ed.scrollTop = Math.max(0, (lines - 2) * approxLineH);
                 };
                 applyEd();
-                setTimeout(applyEd, 50);
-                setTimeout(applyEd, 150);
+                setTimeout(applyEd, 30);
+                setTimeout(applyEd, 80);
+                setTimeout(applyEd, 160);
+                setTimeout(applyEd, 300);
+                setTimeout(applyEd, 500);
             }
         }
 
         function restorePreview() {
-            // Locate the preview container
-            let c = null;
-            const allDivs = pDoc.querySelectorAll('div');
-            for (const div of allDivs) {
-                const overflowStyle = window.getComputedStyle(div).overflow;
-                if (div.clientHeight >= 200 && div.clientHeight <= 1000 && (overflowStyle === 'auto' || overflowStyle === 'overlay' || overflowStyle === 'scroll')) {
-                    if (div.querySelector('h1, h2, p, li')) {
-                        c = div; break;
-                    }
-                }
-            }
-            if (!c) {
-                const containers = pDoc.querySelectorAll('div[data-testid="stVerticalBlockBorderWrapper"] > div, div[data-testid="stVerticalBlock"]');
-                for (const el of containers) {
-                    if (el.clientHeight > 200 && el.clientHeight < 1000 && el.querySelector('p, h1, h2')) {
-                        c = el; break;
-                    }
-                }
-            }
+            const c = getCanvasPreviewContainer();
             if (!c) return;
 
-            const snippet = pWin.__readingSnippet;
+            const landmark = pWin.__readingLandmark;
+            const snippet = (landmark ? landmark.text : pWin.__readingSnippet) || '';
             const ratio = pWin.__readingRatio || 0;
 
             const applyPreview = () => {
                 let targetScroll = -1;
-                if (snippet && snippet.length >= 5) {
-                    const els = c.querySelectorAll('h1, h2, h3, h4, h5, p, li, strong, code');
-                    const cRect = c.getBoundingClientRect();
-                    for (const el of els) {
-                        if ((el.innerText || el.textContent || '').includes(snippet.substring(0, 15))) {
-                            const elRect = el.getBoundingClientRect();
-                            targetScroll = elRect.top - cRect.top + c.scrollTop - 20;
-                            break;
+                const cRect = c.getBoundingClientRect();
+
+                // 1. Se il landmark è un TITOLO Markdown: trova l'intestazione corrispondente
+                if (landmark && landmark.type === 'heading' && snippet.length >= 3) {
+                    const headings = c.querySelectorAll('h1, h2, h3, h4, h5, h6');
+                    const cleanTarget = snippet.toLowerCase().trim();
+                    let bestHeading = null;
+                    let bestHeadingScore = 0;
+
+                    headings.forEach((h, hIdx) => {
+                        const hText = (h.innerText || h.textContent || '').toLowerCase().trim();
+                        let score = 0;
+                        if (hText === cleanTarget) {
+                            score = 10000;
+                        } else if (hText.includes(cleanTarget) || cleanTarget.includes(hText)) {
+                            score = 5000;
+                        } else {
+                            const sub = cleanTarget.substring(0, 15);
+                            if (sub.length >= 5 && hText.includes(sub)) score = 2000;
                         }
+                        if (score > 0) {
+                            const hRatio = headings.length > 1 ? (hIdx / (headings.length - 1)) : 0;
+                            const prox = Math.max(0, 500 - Math.abs(hRatio - ratio) * 1000);
+                            score += prox;
+                        }
+                        if (score > bestHeadingScore) {
+                            bestHeadingScore = score;
+                            bestHeading = h;
+                        }
+                    });
+
+                    if (bestHeading) {
+                        const hRect = bestHeading.getBoundingClientRect();
+                        targetScroll = (hRect.top - cRect.top) + c.scrollTop - 25;
                     }
                 }
+
+                // 2. Se non è un titolo o se non c'è match, effettua il matching su paragrafi / elementi testuali
+                if (targetScroll < 0 && snippet.length >= 6) {
+                    const snipClean = snippet.toLowerCase().replace(/[^\w\s\u00C0-\u017F]/g, ' ');
+                    const words = snipClean.split(/\s+/).filter(w => w.length >= 4);
+
+                    const els = c.querySelectorAll('h1, h2, h3, h4, h5, p, li, blockquote, tr');
+                    let bestEl = null;
+                    let bestScore = 0;
+
+                    els.forEach((el, elIdx) => {
+                        const elText = (el.innerText || el.textContent || '').trim();
+                        if (!elText) return;
+                        const elTextLower = elText.toLowerCase();
+
+                        let score = 0;
+                        if (elTextLower.includes(snippet.toLowerCase().substring(0, 25))) {
+                            score = 3000;
+                        } else if (elTextLower.includes(snippet.toLowerCase().substring(0, 15))) {
+                            score = 1500;
+                        }
+
+                        let wordHits = 0;
+                        for (const w of words) {
+                            if (elTextLower.includes(w)) wordHits++;
+                        }
+                        if (words.length > 0 && wordHits >= Math.min(2, words.length)) {
+                            score += wordHits * 120;
+                        }
+
+                        if (score > 0) {
+                            // Proximity bonus fondamentale: favorisce la zona corretta del documento ed evita salti in alto
+                            const elRatio = els.length > 1 ? (elIdx / (els.length - 1)) : 0;
+                            const prox = Math.max(0, 500 - Math.abs(elRatio - ratio) * 1000);
+                            score += prox;
+                        }
+
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestEl = el;
+                        }
+                    });
+
+                    if (bestEl && bestScore >= 150) {
+                        const elRect = bestEl.getBoundingClientRect();
+                        targetScroll = (elRect.top - cRect.top) + c.scrollTop - 25;
+                    }
+                }
+
+                // 3. Fallback: percentuale di scroll
                 if (targetScroll >= 0) {
-                    c.scrollTop = targetScroll;
+                    c.scrollTop = Math.max(0, targetScroll);
                 } else if (ratio > 0) {
                     const max = c.scrollHeight - c.clientHeight;
                     if (max > 0) c.scrollTop = ratio * max;
                 }
             };
+
             applyPreview();
-            setTimeout(applyPreview, 50);
-            setTimeout(applyPreview, 150);
+            setTimeout(applyPreview, 30);
+            setTimeout(applyPreview, 80);
+            setTimeout(applyPreview, 160);
             setTimeout(applyPreview, 300);
+            setTimeout(applyPreview, 500);
         }
 
         function checkModeAndSync() {
@@ -1165,59 +1367,66 @@ def inject_scroll_sync_mode_js():
             if (editors.length > 0) {
                 // MODIFICA MODE
                 const ed = editors[0];
+                const bridge = pDoc.querySelector('textarea[aria-label="__notes_sync_bridge__"]');
                 if (pWin.__currentActiveMode !== 'modifica') {
                     pWin.__currentActiveMode = 'modifica';
-                    restoreEditor(ed);
-                }
-
-                // Se il bridge è cambiato dall'esterno (es. cambio versione o elaborazione AI), aggiorna l'editor
-                const bridge = pDoc.querySelector('textarea[aria-label="__notes_sync_bridge__"]');
-                if (bridge) {
-                    const bridgeVal = bridge.value || '';
-                    if (pWin.__lastSyncedBridgeVal === undefined) {
-                        pWin.__lastSyncedBridgeVal = bridgeVal;
-                    }
-                    if (pWin.__lastSyncedBridgeVal !== bridgeVal) {
-                        pWin.__lastSyncedBridgeVal = bridgeVal;
-                        if (ed.value !== bridgeVal) {
-                            ed.value = bridgeVal;
+                    pWin.__lastSyncedBridgeVal = ed.value || '';
+                    if (bridge && bridge.value !== ed.value) {
+                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, 'value').set;
+                        if (nativeInputValueSetter) {
+                            nativeInputValueSetter.call(bridge, ed.value);
+                        } else {
+                            bridge.value = ed.value;
                         }
                     }
+                    restoreEditor(ed);
                 }
 
                 if (!ed.__boundSync) {
                     ed.__boundSync = true;
-                    const syncToBridge = function(e) {
+                    const syncToBridge = function(forceCommit) {
                         const bridge = pDoc.querySelector('textarea[aria-label="__notes_sync_bridge__"]');
                         if (bridge) {
                             const txt = ed.value || '';
-                            if (bridge.value !== txt) {
-                                pWin.__lastSyncedBridgeVal = txt;
-                                const lastValue = bridge.value;
-                                
-                                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, 'value').set;
-                                if (nativeInputValueSetter) {
-                                    nativeInputValueSetter.call(bridge, txt);
-                                } else {
-                                    bridge.value = txt;
-                                }
-                                
-                                const tracker = bridge._valueTracker;
-                                if (tracker) {
-                                    tracker.setValue(lastValue);
-                                }
-                                
-                                bridge.dispatchEvent(new Event('input', { bubbles: true }));
-                                bridge.dispatchEvent(new Event('change', { bubbles: true }));
-                                if (e && e.type === 'blur') {
-                                    bridge.dispatchEvent(new Event('blur', { bubbles: true }));
-                                }
+                            pWin.__lastSyncedBridgeVal = txt;
+                            const lastValue = bridge.value;
+                            
+                            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, 'value').set;
+                            if (nativeInputValueSetter) {
+                                nativeInputValueSetter.call(bridge, txt);
+                            } else {
+                                bridge.value = txt;
+                            }
+                            
+                            const tracker = bridge._valueTracker;
+                            if (tracker) {
+                                tracker.setValue(lastValue);
+                            }
+                            
+                            bridge.dispatchEvent(new Event('input', { bubbles: true }));
+                            bridge.dispatchEvent(new Event('change', { bubbles: true }));
+
+                            if (forceCommit) {
+                                bridge.dispatchEvent(new KeyboardEvent('keydown', {
+                                    key: 'Enter',
+                                    code: 'Enter',
+                                    keyCode: 13,
+                                    which: 13,
+                                    ctrlKey: true,
+                                    bubbles: true,
+                                    cancelable: true
+                                }));
+                                try {
+                                    bridge.focus();
+                                    bridge.blur();
+                                } catch(err) {}
                             }
                         }
                     };
-                    ed.addEventListener('input', syncToBridge);
-                    ed.addEventListener('change', syncToBridge);
-                    ed.addEventListener('blur', syncToBridge);
+
+                    ed.addEventListener('input', () => syncToBridge(false));
+                    ed.addEventListener('change', () => syncToBridge(false));
+                    ed.addEventListener('blur', () => syncToBridge(true));
                     
                     ed.addEventListener('keyup', () => saveEditorPos(ed));
                     ed.addEventListener('mouseup', () => saveEditorPos(ed));
@@ -1230,14 +1439,35 @@ def inject_scroll_sync_mode_js():
                             const end = ed.selectionEnd;
                             ed.value = ed.value.substring(0, start) + "    " + ed.value.substring(end);
                             ed.selectionStart = ed.selectionEnd = start + 4;
-                            syncToBridge();
+                            syncToBridge(false);
                         }
                     });
+
+                    if (!pDoc.__canvasHeaderBtnInterceptBound) {
+                        pDoc.__canvasHeaderBtnInterceptBound = true;
+                        pDoc.addEventListener('mousedown', function(e) {
+                            const btn = e.target.closest('button');
+                            if (btn && (btn.id?.includes('btn_toggle_canvas_edit_icon') || 
+                                        btn.getAttribute('data-testid')?.includes('btn_toggle_canvas_edit_icon') ||
+                                        btn.getAttribute('key')?.includes('btn_toggle_canvas_edit_icon') ||
+                                        btn.innerText?.includes('👁') || 
+                                        btn.innerText?.includes('✏') || 
+                                        btn.innerText?.includes('📤') ||
+                                        btn.innerText?.includes('🔙'))) {
+                                const currentEd = pDoc.querySelector('.raw-markdown-editor');
+                                if (currentEd) {
+                                    saveEditorPos(currentEd);
+                                    syncToBridge(true);
+                                }
+                            }
+                        }, true);
+                    }
                 }
             } else {
                 // ANTEPRIMA MODE (No editor found)
                 if (pWin.__currentActiveMode !== 'anteprima') {
                     pWin.__currentActiveMode = 'anteprima';
+                    pWin.__lastSyncedBridgeVal = undefined;
                     restorePreview();
                 }
             }
@@ -1251,7 +1481,7 @@ def inject_scroll_sync_mode_js():
     })();
     </script>
     """
-    st.components.v1.html(sync_js, height=0)
+    st.iframe(sync_js, height=1)
 
 def inject_image_paste_drop_js():
     render_notes_sync_bridge()
@@ -1259,6 +1489,230 @@ def inject_image_paste_drop_js():
     js_html = generate_image_paste_drop_js()
     if js_html:
         st.iframe(js_html, height=1)
+
+ITALIAN_STOP_WORDS = {
+    'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'di', 'a', 'da', 'in', 'con', 'su',
+    'per', 'tra', 'fra', 'del', 'dello', 'della', 'dei', 'degli', 'delle', 'al', 'allo', 'alla',
+    'ai', 'agli', 'alle', 'dal', 'dallo', 'dalla', 'dai', 'dagli', 'dalle', 'nel', 'nello', 'nella',
+    'nei', 'negli', 'nelle', 'sul', 'sullo', 'sulla', 'sui', 'sugli', 'sulle', 'ed', 'ad', 'che',
+    'chi', 'cui', 'quale', 'quali', 'questo', 'questa', 'questi', 'queste', 'quello', 'quella',
+    'quelli', 'quelle', 'come', 'dove', 'quando', 'perché', 'perche', 'anche', 'non', 'più', 'piu',
+    'molto', 'poco', 'tutto', 'tutti', 'tutta', 'tutte', 'cosa', 'cose', 'essere', 'avere', 'fare',
+    'dire', 'stato', 'stata', 'stati', 'state', 'sono', 'sei', 'era', 'erano', 'sarà', 'sara',
+    'saranno', 'può', 'puo', 'possono', 'quindi', 'infatti', 'inoltre', 'invece', 'però', 'pero',
+    'tuttavia', 'cioè', 'cioe', 'ossia', 'abbiamo', 'possiamo', 'notare', 'vedere', 'esempio',
+    'caso', 'modo', 'punto', 'parte', 'particolare', 'generale'
+}
+
+def prepare_canvas_render_with_marker(raw_markdown, target_snip, edit_mode):
+    cleaned = notion_helper.clean_markdown_for_streamlit(raw_markdown or "", default_width="50%").strip()
+    if not target_snip or edit_mode:
+        return cleaned
+    
+    clean_target = notion_helper.clean_markdown_for_streamlit(target_snip, default_width="50%").strip()
+    pos = -1
+    if clean_target and clean_target in cleaned:
+        pos = cleaned.find(clean_target)
+    elif target_snip in cleaned:
+        pos = cleaned.find(target_snip)
+    else:
+        for line in clean_target.splitlines():
+            line_s = line.strip()
+            if len(line_s) >= 6 and line_s in cleaned:
+                pos = cleaned.find(line_s)
+                break
+    if pos != -1:
+        return cleaned[:pos] + '<span id="canvas-ai-modified-target"></span>\n' + cleaned[pos:]
+    return cleaned
+
+def inject_canvas_snippet_scroll_js():
+    """
+    Inietta uno script JavaScript per effettuare lo scroll automatico e l'evidenziazione
+    della sezione del Canvas appena modificata dall'Assistente AI.
+    """
+    snippet = st.session_state.pop("canvas_scroll_target_snippet", None)
+    if not snippet or not str(snippet).strip():
+        return
+        
+    clean_snippet = re.sub(r'[$#*`_\[\]()>\-]', ' ', str(snippet))
+    clean_snippet = re.sub(r'\s+', ' ', clean_snippet).strip()
+    words = re.findall(r'[a-zA-Z0-9àèéìòùÀÈÉÌÒÙ]{4,}', clean_snippet)
+    distinctive = [w for w in words if w.lower() not in ITALIAN_STOP_WORDS]
+    seen = set()
+    unique_kw = []
+    for w in distinctive:
+        if w.lower() not in seen:
+            seen.add(w.lower())
+            unique_kw.append(w)
+            
+    keywords_json = json.dumps(unique_kw[:8])
+    
+    raw_js = """
+    <script>
+    (function() {
+        const pDoc = window.parent.document;
+        const pWin = window.parent;
+        const keywords = __KEYWORDS_PLACEHOLDER__;
+
+        if (keywords && keywords.length > 0) {
+            pWin.__readingSnippet = keywords.join(' ');
+        }
+
+        let targetFound = false;
+        let memoTargetScroll = -1;
+
+        function findCanvasScrollContainer() {
+            // 1. Cerca prima tramite l'ancora specifica posta all'interno del Canvas
+            const anchor = pDoc.getElementById('canvas-scroll-anchor');
+            if (anchor) {
+                let curr = anchor.parentElement;
+                while (curr && curr !== pDoc.body) {
+                    const style = pWin.getComputedStyle(curr);
+                    const overflowY = style.overflowY || style.overflow;
+                    if (curr.clientHeight >= 200 && (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')) {
+                        return curr;
+                    }
+                    curr = curr.parentElement;
+                }
+            }
+
+            // 2. Fallback: cerca esplicitamente all'interno della colonna di destra del Canvas
+            const studioCols = pDoc.querySelectorAll('[data-testid="stHorizontalBlock"] > div');
+            if (studioCols.length >= 3) {
+                const rightCol = studioCols[studioCols.length - 1];
+                const divs = rightCol.querySelectorAll('div');
+                for (const d of divs) {
+                    const style = pWin.getComputedStyle(d);
+                    const overflowY = style.overflowY || style.overflow;
+                    if (d.clientHeight >= 200 && (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')) {
+                        return d;
+                    }
+                }
+            }
+            return null;
+        }
+
+        function tryScroll() {
+            const c = findCanvasScrollContainer();
+            if (!c) return false;
+
+            const ed = c.querySelector('.raw-markdown-editor, textarea');
+            if (ed && ed.value) {
+                const val = ed.value.toLowerCase();
+                for (const kw of keywords) {
+                    const idx = val.indexOf(kw.toLowerCase());
+                    if (idx !== -1) {
+                        const linesBefore = val.substring(0, idx).split('\\n').length;
+                        const totalLines = Math.max(1, val.split('\\n').length);
+                        const approxLineH = ed.scrollHeight > 0 ? (ed.scrollHeight / totalLines) : 22;
+                        ed.scrollTop = Math.max(0, (linesBefore - 3) * approxLineH);
+                        const maxEd = ed.scrollHeight - ed.clientHeight;
+                        if (maxEd > 0) pWin.__readingRatio = ed.scrollTop / maxEd;
+                        pWin.__readingSnippet = keywords.join(' ');
+                        return true;
+                    }
+                }
+            }
+
+            let targetEl = null;
+
+            // 1. Priorità assoluta: marker esatto inserito nel DOM di anteprima
+            const marker = c.querySelector('#canvas-ai-modified-target');
+            if (marker) {
+                let candidate = marker.nextElementSibling;
+                if (!candidate) {
+                    candidate = marker.parentElement;
+                }
+                while (candidate && candidate !== c && (candidate.tagName === 'SPAN' || candidate.tagName === 'EM' || candidate.tagName === 'STRONG')) {
+                    candidate = candidate.parentElement;
+                }
+                if (candidate && candidate !== c) {
+                    targetEl = candidate;
+                }
+            }
+
+            // 2. Fallback: punteggio massimo tra tutti gli elementi di testo
+            if (!targetEl && keywords && keywords.length > 0) {
+                const elements = c.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li, blockquote, pre, div.katex-display');
+                let bestEl = null;
+                let maxScore = 0;
+
+                for (const el of elements) {
+                    const text = (el.innerText || el.textContent || '').toLowerCase();
+                    if (!text || text.length < 3) continue;
+
+                    let score = 0;
+                    for (const kw of keywords) {
+                        if (text.includes(kw.toLowerCase())) {
+                            score++;
+                        }
+                    }
+
+                    if (score > maxScore) {
+                        maxScore = score;
+                        bestEl = el;
+                    }
+                }
+
+                const minThreshold = Math.min(2, keywords.length);
+                if (bestEl && maxScore >= minThreshold) {
+                    targetEl = bestEl;
+                }
+            }
+
+            if (targetEl) {
+                const cRect = c.getBoundingClientRect();
+                const elRect = targetEl.getBoundingClientRect();
+                const targetScroll = Math.max(0, elRect.top - cRect.top + c.scrollTop - 40);
+                memoTargetScroll = targetScroll;
+                const max = c.scrollHeight - c.clientHeight;
+                if (max > 0) pWin.__readingRatio = targetScroll / max;
+                if (keywords && keywords.length > 0) pWin.__readingSnippet = keywords.join(' ');
+                
+                c.scrollTo({
+                    top: targetScroll,
+                    behavior: targetFound ? 'auto' : 'smooth'
+                });
+
+                if (!targetFound) {
+                    targetFound = true;
+                    try {
+                        const origBg = targetEl.style.backgroundColor || 'transparent';
+                        const origBorder = targetEl.style.borderLeft || '';
+                        
+                        targetEl.style.transition = 'all 0.3s ease';
+                        targetEl.style.backgroundColor = 'rgba(245, 158, 11, 0.22)';
+                        targetEl.style.borderLeft = '3.5px solid #f59e0b';
+                        targetEl.style.borderRadius = '4px';
+                        targetEl.style.paddingLeft = '8px';
+
+                        pWin.setTimeout(() => {
+                            targetEl.style.transition = 'all 0.8s ease';
+                            targetEl.style.backgroundColor = origBg;
+                            targetEl.style.borderLeft = origBorder;
+                            targetEl.style.paddingLeft = '';
+                        }, 2500);
+                    } catch(e) {}
+                }
+                return true;
+            } else if (targetFound && memoTargetScroll >= 0) {
+                c.scrollTop = memoTargetScroll;
+                return true;
+            }
+            return false;
+        }
+
+        pWin.setTimeout(tryScroll, 40);
+        pWin.setTimeout(tryScroll, 120);
+        pWin.setTimeout(tryScroll, 250);
+        pWin.setTimeout(tryScroll, 500);
+        pWin.setTimeout(tryScroll, 850);
+        pWin.setTimeout(tryScroll, 1300);
+    })();
+    </script>
+    """
+    js = raw_js.replace("__KEYWORDS_PLACEHOLDER__", keywords_json)
+    st.iframe(js, height=1)
 
 def inject_scroll_to_results():
     """
@@ -1296,7 +1750,7 @@ def inject_scroll_to_results():
     })();
     </script>
     """
-    st.components.v1.html(scroll_js, height=0)
+    st.iframe(scroll_js, height=1)
 
 
 # --- FRAGMENT NOTIFICA TOAST FLUTTUANTE CON BARRA DI CARICAMENTO ---
@@ -1479,7 +1933,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 max-height: calc(100vh - 35px) !important;
                 overflow-x: hidden !important;
                 overflow-y: auto !important;
-                padding-bottom: 80px !important; /* Spazio per la barra custom */
+                padding-bottom: 110px !important; /* Spazio per la barra custom con eventuale citazione */
                 padding-right: 0.5rem !important;
                 display: flex !important;
                 flex-direction: column !important;
@@ -1815,21 +2269,59 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         with b3:
             has_unsaved_canvas = check_has_unsaved_changes()
             help_notion = "⚠️ Salva su Notion (Modifiche non salvate)" if has_unsaved_canvas else "Salva su Notion"
-            trigger_notion_save = st.button("📤", help=help_notion, key="btn_save_notion_icon")
+            trigger_notion_save = st.button("📤", help=help_notion, key="btn_save_notion_icon", disabled=is_saving_active)
         with b4:
             trigger_back = st.button("🔙", help="Torna al Form", key="btn_close_canvas_icon")
 
         if trigger_edit_toggle:
             st.session_state.canvas_edit_mode_toggle = not st.session_state.canvas_edit_mode_toggle
+            cur_idx = st.session_state.get("current_version_index", 0)
+            versions = st.session_state.get("notes_versions", [])
+            
             if st.session_state.canvas_edit_mode_toggle:
-                if "markdown_editor_area_canvas" in st.session_state:
-                    del st.session_state["markdown_editor_area_canvas"]
+                # Entrando in modalità MODIFICA MANUALE:
+                # Sincronizza esplicitamente il testo attivo della versione corrente nel bridge e nell'editor
+                active_text = st.session_state.get("appunti_generati") or (versions[cur_idx] if 0 <= cur_idx < len(versions) else "")
+                safe_set_session_state("notes_sync_bridge_input", active_text)
+                safe_set_session_state("markdown_editor_area_canvas", active_text)
+                safe_set_session_state("markdown_editor_area", active_text)
+                st.session_state._version_just_switched = True
+                st.session_state._version_switch_timestamp = time.time()
+            else:
+                # Uscendo da modalità MODIFICA (tornando in ANTEPRIMA):
+                # Salva le modifiche digitate manualmente nell'editor dentro appunti_generati e nella versione
+                bridge_val = st.session_state.get("notes_sync_bridge_input")
+                if bridge_val and str(bridge_val).strip():
+                    st.session_state.appunti_generati = bridge_val
+                    st.session_state._last_valid_appunti = bridge_val
+                    if 0 <= cur_idx < len(versions):
+                        versions[cur_idx] = bridge_val
+                st.session_state._version_just_switched = True
+                st.session_state._version_switch_timestamp = time.time()
             st.rerun()
         if trigger_back:
+            if st.session_state.canvas_edit_mode_toggle:
+                bridge_val = st.session_state.get("notes_sync_bridge_input")
+                if bridge_val and str(bridge_val).strip():
+                    st.session_state.appunti_generati = bridge_val
+                    st.session_state._last_valid_appunti = bridge_val
+                    cur_idx = st.session_state.get("current_version_index", 0)
+                    versions = st.session_state.get("notes_versions", [])
+                    if 0 <= cur_idx < len(versions):
+                        versions[cur_idx] = bridge_val
             st.session_state.show_canvas_chat = False
             st.rerun()
 
         if trigger_notion_save:
+            if st.session_state.canvas_edit_mode_toggle:
+                bridge_val = st.session_state.get("notes_sync_bridge_input")
+                if bridge_val and str(bridge_val).strip():
+                    st.session_state.appunti_generati = bridge_val
+                    st.session_state._last_valid_appunti = bridge_val
+                    cur_idx = st.session_state.get("current_version_index", 0)
+                    versions = st.session_state.get("notes_versions", [])
+                    if 0 <= cur_idx < len(versions):
+                        versions[cur_idx] = bridge_val
             save_current_notes_to_notion()
 
         if trigger_latex_regen:
@@ -1844,25 +2336,54 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         # NOTIFICA CONTINUA ANIMATA PER OPERAZIONI IN BACKGROUND (NOTION & LATEX)
         render_active_background_operations_banner()
 
-        if check_has_unsaved_changes():
-            st.warning("⚠️ **Modifiche non salvate**: ricordati di salvare gli appunti su Notion (icona 📤 in alto a destra) per non perdere le modifiche.")
+        has_unsaved_notes = check_has_unsaved_changes()
+        if has_unsaved_notes:
+            st.markdown("""
+                <div style="
+                    background: rgba(245, 158, 11, 0.12);
+                    border: 1px solid rgba(245, 158, 11, 0.35);
+                    border-left: 3.5px solid #f59e0b;
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                    margin-bottom: 8px;
+                    font-size: 13px;
+                    color: #fde68a;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    line-height: 1.4;
+                ">
+                    <span style="font-size: 15px; flex-shrink: 0;">⚠️</span>
+                    <span><strong>Modifiche non salvate:</strong> ricordati di salvare gli appunti su Notion (icona 📤 in alto a destra) per non perdere le modifiche.</span>
+                </div>
+            """, unsafe_allow_html=True)
+
+        canvas_container_height = 585 if has_unsaved_notes else 650
+        bottom_spacer_h = "280px" if has_unsaved_notes else "220px"
+        editor_h = 540 if has_unsaved_notes else 600
+        editor_min_h = 520 if has_unsaved_notes else 580
 
         if st.session_state.latex_generato:
             tab_canvas_md, tab_canvas_lat = st.tabs(["📚 Appunti (Markdown)", "📄 Codice LaTeX"])
             with tab_canvas_md:
                 render_version_navigation_bar("canvas_tab_md")
                 st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
-                cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "", default_width="50%").strip()
+                cleaned_render_canvas = prepare_canvas_render_with_marker(
+                    st.session_state.appunti_generati,
+                    st.session_state.get("canvas_scroll_target_snippet"),
+                    st.session_state.canvas_edit_mode_toggle
+                )
 
-                canvas_scroll_area_md = st.container(height=650, border=False)
+                canvas_scroll_area_md = st.container(height=canvas_container_height, border=False)
                 with canvas_scroll_area_md:
+                    st.markdown("<div id='canvas-scroll-anchor' style='display:none;'></div>", unsafe_allow_html=True)
                     if st.session_state.canvas_edit_mode_toggle:
                         escaped_text = html.escape(st.session_state.appunti_generati or "")
                         st.markdown(f"""
                             <textarea id="canvas-inplace-editor" class="raw-markdown-editor" spellcheck="false" style="
                                 width: 100%;
-                                min-height: 580px;
-                                height: 600px;
+                                min-height: {editor_min_h}px;
+                                height: {editor_h}px;
                                 background-color: #1e1e1e;
                                 color: #e2e8f0;
                                 font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
@@ -1876,24 +2397,24 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                 resize: vertical;
                                 box-sizing: border-box;
                             ">{escaped_text}</textarea>
-                            <div style="height: 140px;"></div>
+                            <div style="height: {bottom_spacer_h};"></div>
                         """, unsafe_allow_html=True)
                     else:
                         canvas_placeholder = st.empty()
-                        canvas_placeholder.markdown(cleaned_render_canvas + "\n\n<div style='height: 140px;'></div>", unsafe_allow_html=True)
+                        canvas_placeholder.markdown(cleaned_render_canvas + f"\n\n<div style='height: {bottom_spacer_h};'></div>", unsafe_allow_html=True)
 
             with tab_canvas_lat:
-                canvas_scroll_area_lat = st.container(height=650, border=False)
+                canvas_scroll_area_lat = st.container(height=canvas_container_height, border=False)
                 with canvas_scroll_area_lat:
                     if st.session_state.canvas_edit_mode_toggle:
                         edited_latex_canvas = st.text_area(
                             "Modifica direttamente il codice LaTeX nel Canvas:",
                             value=st.session_state.latex_generato if st.session_state.latex_generato else "",
-                            height=580,
+                            height=editor_min_h,
                             key="latex_editor_area_canvas"
                         )
                         st.session_state.latex_generato = edited_latex_canvas
-                        st.markdown("<div style='height: 140px;'></div>", unsafe_allow_html=True)
+                        st.markdown(f"<div style='height: {bottom_spacer_h};'></div>", unsafe_allow_html=True)
                     else:
                         st.code(st.session_state.latex_generato, language="latex")
                         st.divider()
@@ -1902,21 +2423,26 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             st.download_button("💾 Scarica .tex", st.session_state.latex_generato, f"appunti_{datetime.date.today().strftime('%d_%m_%Y')}.tex")
                         with c_lat2:
                             st_copy_to_clipboard(st.session_state.latex_generato, "📋 Copia LaTeX")
-                        st.markdown("<div style='height: 140px;'></div>", unsafe_allow_html=True)
+                        st.markdown(f"<div style='height: {bottom_spacer_h};'></div>", unsafe_allow_html=True)
         else:
             render_version_navigation_bar("canvas_no_tab_md")
             st.markdown("<div style='margin-bottom: 4px;'></div>", unsafe_allow_html=True)
-            cleaned_render_canvas = notion_helper.clean_markdown_for_streamlit(st.session_state.appunti_generati or "", default_width="50%").strip()
+            cleaned_render_canvas = prepare_canvas_render_with_marker(
+                st.session_state.appunti_generati,
+                st.session_state.get("canvas_scroll_target_snippet"),
+                st.session_state.canvas_edit_mode_toggle
+            )
 
-            canvas_scroll_area = st.container(height=650, border=False)
+            canvas_scroll_area = st.container(height=canvas_container_height, border=False)
             with canvas_scroll_area:
+                st.markdown("<div id='canvas-scroll-anchor' style='display:none;'></div>", unsafe_allow_html=True)
                 if st.session_state.canvas_edit_mode_toggle:
                     escaped_text = html.escape(st.session_state.appunti_generati or "")
                     st.markdown(f"""
                         <textarea id="canvas-inplace-editor" class="raw-markdown-editor" spellcheck="false" style="
                             width: 100%;
-                            min-height: 580px;
-                            height: 600px;
+                            min-height: {editor_min_h}px;
+                            height: {editor_h}px;
                             background-color: #1e1e1e;
                             color: #e2e8f0;
                             font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
@@ -1930,13 +2456,14 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             resize: vertical;
                             box-sizing: border-box;
                         ">{escaped_text}</textarea>
-                        <div style="height: 140px;"></div>
+                        <div style="height: {bottom_spacer_h};"></div>
                     """, unsafe_allow_html=True)
                 else:
                     canvas_placeholder = st.empty()
-                    canvas_placeholder.markdown(cleaned_render_canvas + "\n\n<div style='height: 140px;'></div>", unsafe_allow_html=True)
+                    canvas_placeholder.markdown(cleaned_render_canvas + f"\n\n<div style='height: {bottom_spacer_h};'></div>", unsafe_allow_html=True)
 
         inject_image_paste_drop_js()
+        inject_canvas_snippet_scroll_js()
 
     # 2. SEPARATORE CENTRALE CON DRAG HANDLE TRASCINABILE (#drag-handle-pill-native)
     with col_handle:
@@ -1966,7 +2493,6 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
         # --- INIEZIONE BARRA CHAT PERSONALIZZATA STILE CHATGPT E GESTIONE PILLOLA #drag-handle-pill-native ---
         is_streaming_js = "true" if st.session_state.pending_agent_stream else "false"
-        model_badge_text = f"✨ {MODEL_GENERAL.replace('gemini-', 'Gemini ').replace('-', ' ').title()}"
         draggable_handle_js = f"""
         <script>
         (function() {{
@@ -1997,8 +2523,306 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 }}
             }}
 
+            function setQuotedText(text, mode) {{
+                if (!text || !text.trim()) return;
+                pWin.__activeQuotedText = text.trim();
+                pWin.__activeQuoteMode = mode || 'mention';
+                const preview = pDoc.getElementById('chatgpt-quote-preview');
+                const quoteTextEl = pDoc.getElementById('chatgpt-quote-text');
+                const quoteIconEl = pDoc.getElementById('chatgpt-quote-icon');
+                const textarea = pDoc.getElementById('custom-chatgpt-textarea');
+                if (preview && quoteTextEl) {{
+                    const singleLine = text.split(String.fromCharCode(10)).join(' ').split(' ').filter(Boolean).join(' ');
+                    quoteTextEl.textContent = singleLine;
+                    quoteTextEl.title = text;
+                    if (quoteIconEl) {{
+                        if (mode === 'targeted') {{
+                            quoteIconEl.innerHTML = '<span style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;">&#9998; Modifica solo questo</span>';
+                            preview.style.borderLeftColor = '#f59e0b';
+                        }} else {{
+                            quoteIconEl.innerHTML = '<span style="color: #38bdf8; font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 4px;">&#10077; Menziona</span>';
+                            preview.style.borderLeftColor = '#38bdf8';
+                        }}
+                    }}
+                    if (textarea) {{
+                        if (mode === 'targeted') {{
+                            textarea.placeholder = "Cosa vuoi modificare in questa sezione? (es. espandi, correggi, semplifica)...";
+                        }} else {{
+                            textarea.placeholder = "Chiedi all'Assistente AI di spiegare o approfondire...";
+                        }}
+                    }}
+                    preview.style.display = 'flex';
+                }}
+                syncChatInputPos();
+                if (textarea) {{
+                    textarea.focus();
+                }}
+            }}
+
+            function clearQuotedText() {{
+                pWin.__activeQuotedText = null;
+                pWin.__activeQuoteMode = null;
+                pWin.__tempSelectedText = null;
+                const preview = pDoc.getElementById('chatgpt-quote-preview');
+                if (preview) {{
+                    preview.style.display = 'none';
+                }}
+                const textarea = pDoc.getElementById('custom-chatgpt-textarea');
+                if (textarea) {{
+                    textarea.placeholder = "Chiedi all'Assistente AI di modificare il Canvas...";
+                }}
+                syncChatInputPos();
+            }}
+
+            function isCanvasStudioActive() {{
+                return !!(pDoc.getElementById('drag-handle-pill-native') || pDoc.getElementById('canvas-scroll-anchor') || pDoc.querySelector('#canvas-inplace-editor'));
+            }}
+
+            function ensureSelectionMentionPill() {{
+                if (!isCanvasStudioActive()) {{
+                    const existingPill = pDoc.getElementById('selection-mention-pill');
+                    if (existingPill) existingPill.remove();
+                    return null;
+                }}
+                let pill = pDoc.getElementById('selection-mention-pill');
+                if (!pill) {{
+                    pill = pDoc.createElement('div');
+                    pill.id = 'selection-mention-pill';
+                    pill.innerHTML = `
+                        <button id="pill-btn-mention" class="pill-action-btn" type="button" title="Cita in chat per chiarimenti didattici">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                            </svg>
+                            <span>Menziona</span>
+                        </button>
+                        <div class="pill-divider"></div>
+                        <button id="pill-btn-edit" class="pill-action-btn pill-action-edit" type="button" title="Riscrivi o espandi solo questa sezione nel Canvas">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 20h9"></path>
+                                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                            </svg>
+                            <span>Modifica solo questo</span>
+                        </button>
+                    `;
+                    pDoc.body.appendChild(pill);
+                }}
+
+                pill.onmousedown = function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                }};
+
+                const btnMention = pill.querySelector('#pill-btn-mention');
+                const btnEdit = pill.querySelector('#pill-btn-edit');
+
+                if (btnMention) {{
+                    btnMention.onmousedown = function(e) {{ e.preventDefault(); e.stopPropagation(); }};
+                    btnMention.onclick = function(e) {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const textToQuote = pWin.__tempSelectedText;
+                        hideSelectionPill();
+                        const sel = (pDoc.getSelection && pDoc.getSelection()) || (pWin.getSelection && pWin.getSelection()) || window.getSelection();
+                        if (sel) {{
+                            try {{ sel.removeAllRanges(); }} catch(err) {{}}
+                        }}
+                        if (textToQuote) {{
+                            setQuotedText(textToQuote, 'mention');
+                        }}
+                        setTimeout(function() {{
+                            const ta = pDoc.getElementById('custom-chatgpt-textarea');
+                            if (ta) {{
+                                ta.focus();
+                                const len = ta.value.length;
+                                try {{ ta.setSelectionRange(len, len); }} catch(err) {{}}
+                            }}
+                        }}, 40);
+                    }};
+                }}
+
+                if (btnEdit) {{
+                    btnEdit.onmousedown = function(e) {{ e.preventDefault(); e.stopPropagation(); }};
+                    btnEdit.onclick = function(e) {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const textToQuote = pWin.__tempSelectedText;
+                        hideSelectionPill();
+                        const sel = (pDoc.getSelection && pDoc.getSelection()) || (pWin.getSelection && pWin.getSelection()) || window.getSelection();
+                        if (sel) {{
+                            try {{ sel.removeAllRanges(); }} catch(err) {{}}
+                        }}
+                        if (textToQuote) {{
+                            setQuotedText(textToQuote, 'targeted');
+                        }}
+                        setTimeout(function() {{
+                            const ta = pDoc.getElementById('custom-chatgpt-textarea');
+                            if (ta) {{
+                                ta.focus();
+                                const len = ta.value.length;
+                                try {{ ta.setSelectionRange(len, len); }} catch(err) {{}}
+                            }}
+                        }}, 40);
+                    }};
+                }}
+
+                return pill;
+            }}
+
+            function hideSelectionPill() {{
+                const pill = pDoc.getElementById('selection-mention-pill');
+                if (pill) {{
+                    pill.style.display = 'none';
+                }}
+            }}
+
+            function setupTextSelectionListener() {{
+                ensureSelectionMentionPill();
+
+                // Pulisce vecchi listener registrati da iframe precedenti durante rerun Streamlit
+                if (pWin.__cleanupSelectionListeners) {{
+                    try {{ pWin.__cleanupSelectionListeners(); }} catch(err) {{}}
+                    pWin.__cleanupSelectionListeners = null;
+                }}
+
+                let selectionDebounce = null;
+
+                const handleSelection = function(e) {{
+                    const pill = ensureSelectionMentionPill();
+                    if (e && e.target && pill.contains(e.target)) return;
+
+                    const sel = (pDoc.getSelection && pDoc.getSelection()) || (pWin.getSelection && pWin.getSelection()) || window.getSelection();
+                    let selectedText = '';
+                    let anchorEl = null;
+
+                    if (sel && !sel.isCollapsed && sel.rangeCount > 0) {{
+                        selectedText = sel.toString().trim();
+                        const anchorNode = sel.anchorNode;
+                        anchorEl = anchorNode ? (anchorNode.nodeType === 3 ? anchorNode.parentElement : anchorNode) : null;
+                    }}
+
+                    // Supporto selezione anche dentro textarea (es. editor in-place del Canvas)
+                    const activeEl = pDoc.activeElement;
+                    if ((!selectedText || selectedText.length < 2) && activeEl && activeEl.id === 'canvas-inplace-editor') {{
+                        if (activeEl.selectionStart !== undefined && activeEl.selectionEnd !== undefined && activeEl.selectionEnd > activeEl.selectionStart) {{
+                            selectedText = activeEl.value.substring(activeEl.selectionStart, activeEl.selectionEnd).trim();
+                            anchorEl = activeEl;
+                        }}
+                    }}
+
+                    if (!selectedText || selectedText.length < 2 || !anchorEl) {{
+                        hideSelectionPill();
+                        return;
+                    }}
+
+                    // Non mostrare la pillola se si seleziona dentro la barra di input stessa o dentro un bottone
+                    const bar = pDoc.getElementById('custom-chatgpt-bar');
+                    if (bar && bar.contains(anchorEl)) {{
+                        hideSelectionPill();
+                        return;
+                    }}
+                    if (anchorEl.tagName === 'BUTTON' || (anchorEl.closest && anchorEl.closest('button'))) {{
+                        hideSelectionPill();
+                        return;
+                    }}
+
+                    let rect = null;
+                    if (sel && sel.rangeCount > 0) {{
+                        const range = sel.getRangeAt(0);
+                        const rects = range.getClientRects();
+                        if (rects && rects.length > 0) {{
+                            rect = range.getBoundingClientRect();
+                            if (!rect || (rect.width === 0 && rect.height === 0)) {{
+                                rect = rects[0];
+                            }}
+                        }} else {{
+                            rect = range.getBoundingClientRect();
+                        }}
+                    }} else if (anchorEl) {{
+                        rect = anchorEl.getBoundingClientRect();
+                    }}
+
+                    if (!rect || (rect.width === 0 && rect.height === 0)) {{
+                        hideSelectionPill();
+                        return;
+                    }}
+
+                    pWin.__tempSelectedText = selectedText;
+                    pill.style.display = 'flex';
+                    
+                    const pillWidth = pill.offsetWidth || 230;
+                    const pillHeight = pill.offsetHeight || 34;
+
+                    let top = rect.top - pillHeight - 10;
+                    if (top < 10) {{
+                        top = rect.bottom + 10;
+                    }}
+                    let left = rect.left + (rect.width / 2) - (pillWidth / 2);
+                    left = Math.max(12, Math.min(pWin.innerWidth - pillWidth - 12, left));
+
+                    pill.style.top = top + 'px';
+                    pill.style.left = left + 'px';
+                }};
+
+                const onMouseUp = function(e) {{
+                    clearTimeout(selectionDebounce);
+                    selectionDebounce = setTimeout(function() {{ handleSelection(e); }}, 40);
+                }};
+
+                const onKeyUp = function(e) {{
+                    if (e.key === 'Shift' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {{
+                        clearTimeout(selectionDebounce);
+                        selectionDebounce = setTimeout(function() {{ handleSelection(e); }}, 40);
+                    }}
+                }};
+
+                const onSelectionChange = function() {{
+                    clearTimeout(selectionDebounce);
+                    selectionDebounce = setTimeout(function() {{ handleSelection(null); }}, 60);
+                }};
+
+                const onMouseDown = function(e) {{
+                    const pill = pDoc.getElementById('selection-mention-pill');
+                    if (pill && pill.style.display !== 'none') {{
+                        if (!pill.contains(e.target)) {{
+                            hideSelectionPill();
+                        }}
+                    }}
+                }};
+
+                const onScroll = function() {{
+                    const pill = pDoc.getElementById('selection-mention-pill');
+                    if (pill && pill.style.display !== 'none') {{
+                        hideSelectionPill();
+                    }}
+                }};
+
+                pDoc.addEventListener('mouseup', onMouseUp);
+                pDoc.addEventListener('keyup', onKeyUp);
+                pDoc.addEventListener('selectionchange', onSelectionChange);
+                pDoc.addEventListener('mousedown', onMouseDown);
+                pWin.addEventListener('scroll', onScroll, {{ passive: true }});
+
+                pWin.__cleanupSelectionListeners = function() {{
+                    clearTimeout(selectionDebounce);
+                    pDoc.removeEventListener('mouseup', onMouseUp);
+                    pDoc.removeEventListener('keyup', onKeyUp);
+                    pDoc.removeEventListener('selectionchange', onSelectionChange);
+                    pDoc.removeEventListener('mousedown', onMouseDown);
+                    pWin.removeEventListener('scroll', onScroll);
+                }};
+            }}
+
             function ensureCustomChatGPTBar() {{
+                if (!isCanvasStudioActive()) {{
+                    const existingBar = pDoc.getElementById('custom-chatgpt-bar');
+                    if (existingBar) existingBar.remove();
+                    return null;
+                }}
                 let bar = pDoc.getElementById('custom-chatgpt-bar');
+                if (bar && !pDoc.getElementById('chatgpt-quote-preview')) {{
+                    bar.remove();
+                    bar = null;
+                }}
                 if (!bar) {{
                     bar = pDoc.createElement('div');
                     bar.id = 'custom-chatgpt-bar';
@@ -2007,6 +2831,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             #custom-chatgpt-bar {{
                                 position: fixed;
                                 bottom: 15px;
+                                left: 24px;
+                                width: 440px;
+                                max-width: calc(100vw - 48px);
                                 background: #2f2f2f;
                                 border: 1px solid #424242;
                                 border-radius: 20px;
@@ -2014,15 +2841,55 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                 box-shadow: 0 8px 24px rgba(0,0,0,0.5);
                                 z-index: 99999;
                                 display: flex;
-                                flex-direction: row;
-                                align-items: flex-end;
-                                gap: 12px;
+                                flex-direction: column;
+                                align-items: stretch;
+                                gap: 0px;
                                 box-sizing: border-box;
                                 transition: border-color 0.2s, box-shadow 0.2s;
                             }}
                             #custom-chatgpt-bar:focus-within {{
                                 border-color: #555555;
                                 box-shadow: 0 8px 28px rgba(0,0,0,0.7);
+                            }}
+                            #chatgpt-quote-preview {{
+                                display: none;
+                                align-items: center;
+                                justify-content: space-between;
+                                background: #232323;
+                                border: 1px solid #3d3d3d;
+                                border-left: 3.5px solid #38bdf8;
+                                border-radius: 10px;
+                                padding: 6px 10px;
+                                margin-bottom: 6px;
+                                width: 100%;
+                                box-sizing: border-box;
+                                gap: 8px;
+                            }}
+                            .chatgpt-quote-dismiss-btn {{
+                                background: transparent;
+                                border: none;
+                                color: #888888;
+                                cursor: pointer;
+                                padding: 2px 6px;
+                                border-radius: 4px;
+                                font-size: 13px;
+                                line-height: 1;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                transition: color 0.15s, background-color 0.15s;
+                                flex-shrink: 0;
+                            }}
+                            .chatgpt-quote-dismiss-btn:hover {{
+                                color: #ffffff;
+                                background-color: #383838;
+                            }}
+                            .chatgpt-input-row {{
+                                display: flex;
+                                flex-direction: row;
+                                align-items: flex-end;
+                                gap: 12px;
+                                width: 100%;
                             }}
                             #custom-chatgpt-textarea {{
                                 flex-grow: 1;
@@ -2076,20 +2943,114 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                 50% {{ opacity: 1; }}
                                 100% {{ opacity: 0.6; }}
                             }}
+                            #selection-mention-pill {{
+                                position: fixed;
+                                z-index: 100000;
+                                display: none;
+                                flex-direction: row;
+                                align-items: center;
+                                gap: 3px;
+                                background: #1c1c1c;
+                                border: 1px solid #484848;
+                                border-radius: 20px;
+                                padding: 3px 5px;
+                                box-shadow: 0 8px 24px rgba(0,0,0,0.7);
+                                cursor: default;
+                                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                                user-select: none;
+                                pointer-events: auto;
+                                transition: opacity 0.15s;
+                            }}
+                            .pill-action-btn {{
+                                background: transparent;
+                                border: none;
+                                color: #f1f5f9;
+                                display: flex;
+                                align-items: center;
+                                gap: 6px;
+                                padding: 5px 10px;
+                                border-radius: 14px;
+                                font-size: 12px;
+                                font-weight: 500;
+                                cursor: pointer;
+                                transition: background 0.15s, color 0.15s, transform 0.1s;
+                                white-space: nowrap;
+                            }}
+                            .pill-action-btn:hover {{
+                                background: #2f2f2f;
+                                color: #ffffff;
+                            }}
+                            .pill-action-btn:active {{
+                                transform: scale(0.96);
+                            }}
+                            .pill-action-edit {{
+                                color: #fde68a !important;
+                            }}
+                            .pill-action-edit:hover {{
+                                background: rgba(245, 158, 11, 0.2) !important;
+                                color: #fef08a !important;
+                            }}
+                            .pill-divider {{
+                                width: 1px;
+                                height: 16px;
+                                background: #404040;
+                                margin: 0 2px;
+                            }}
                         </style>
-                        <textarea id="custom-chatgpt-textarea" placeholder="Chiedi all'Assistente AI di modificare il Canvas..." rows="1"></textarea>
-                        <button id="custom-chatgpt-send-btn" class="chatgpt-send-btn" title="Invia messaggio">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                <line x1="12" y1="19" x2="12" y2="5"></line>
-                                <polyline points="5 12 12 5 19 12"></polyline>
-                            </svg>
-                        </button>
+                        <div id="chatgpt-quote-preview">
+                            <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex-grow: 1;">
+                                <div id="chatgpt-quote-icon" style="display: flex; align-items: center; flex-shrink: 0;">
+                                    <span style="color: #38bdf8; font-size: 13.5px; font-weight: 700;">&#10077; Menziona</span>
+                                </div>
+                                <span id="chatgpt-quote-text" style="color: #cbd5e1; font-size: 12px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-grow: 1; font-family: system-ui, -apple-system, sans-serif;"></span>
+                            </div>
+                            <button id="chatgpt-quote-dismiss-btn" type="button" class="chatgpt-quote-dismiss-btn" title="Rimuovi citazione">&#10005;</button>
+                        </div>
+                        <div class="chatgpt-input-row">
+                            <textarea id="custom-chatgpt-textarea" placeholder="Chiedi all'Assistente AI di modificare il Canvas..." rows="1"></textarea>
+                            <button id="custom-chatgpt-send-btn" class="chatgpt-send-btn" title="Invia messaggio">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="19" x2="12" y2="5"></line>
+                                    <polyline points="5 12 12 5 19 12"></polyline>
+                                </svg>
+                            </button>
+                        </div>
                     `;
                     pDoc.body.appendChild(bar);
                 }}
 
                 const textarea = pDoc.getElementById('custom-chatgpt-textarea');
                 const sendBtn = pDoc.getElementById('custom-chatgpt-send-btn');
+                const dismissBtn = pDoc.getElementById('chatgpt-quote-dismiss-btn');
+
+                if (dismissBtn) {{
+                    dismissBtn.onclick = function(e) {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        clearQuotedText();
+                        if (textarea) textarea.focus();
+                    }};
+                }}
+
+                if (pWin.__activeQuotedText) {{
+                    const preview = pDoc.getElementById('chatgpt-quote-preview');
+                    const quoteTextEl = pDoc.getElementById('chatgpt-quote-text');
+                    const quoteIconEl = pDoc.getElementById('chatgpt-quote-icon');
+                    if (preview && quoteTextEl) {{
+                        quoteTextEl.textContent = pWin.__activeQuotedText.split(String.fromCharCode(10)).join(' ').split(' ').filter(Boolean).join(' ');
+                        quoteTextEl.title = pWin.__activeQuotedText;
+                        if (quoteIconEl) {{
+                            if (pWin.__activeQuoteMode === 'targeted') {{
+                                quoteIconEl.innerHTML = '<span style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;">&#9998; Modifica solo questo</span>';
+                                preview.style.borderLeftColor = '#f59e0b';
+                            }} else {{
+                                quoteIconEl.innerHTML = '<span style="color: #38bdf8; font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 4px;">&#10077; Menziona</span>';
+                                preview.style.borderLeftColor = '#38bdf8';
+                            }}
+                        }}
+                        preview.style.display = 'flex';
+                    }}
+                }}
 
                 function updateSendBtnState() {{
                     if (!textarea || !sendBtn) return;
@@ -2119,6 +3080,27 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     const val = textarea.value.trim();
                     if (!val) return;
 
+                    let finalVal = val;
+                    if (pWin.__activeQuotedText) {{
+                        const rawQuote = pWin.__activeQuotedText.trim();
+                        const qLines = rawQuote.split(String.fromCharCode(10));
+                        let blockQuote = '';
+                        if (pWin.__activeQuoteMode === 'targeted') {{
+                            blockQuote = '> 🎯 **[MODIFICA MIRATA SEZIONE]**' + String.fromCharCode(10);
+                        }} else {{
+                            blockQuote = '> **[Testo selezionato]:**' + String.fromCharCode(10);
+                        }}
+                        for (let qi = 0; qi < qLines.length; qi++) {{
+                            let ql = qLines[qi].replace(String.fromCharCode(13), '').trim();
+                            if (ql.length > 0) {{
+                                blockQuote += '> ' + ql + String.fromCharCode(10);
+                            }}
+                        }}
+                        blockQuote += String.fromCharCode(10);
+                        finalVal = blockQuote + val;
+                        clearQuotedText();
+                    }}
+
                     const nativeInputContainer = pDoc.querySelector('div[data-testid="stChatInput"]');
                     if (nativeInputContainer) {{
                         nativeInputContainer.style.cssText = 'position:fixed; bottom:0; left:0; width:1px; height:1px; opacity:0; overflow:hidden; z-index:-1;';
@@ -2129,7 +3111,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
                     if (nativeTextarea && nativeButton) {{
                         const nativeSetter = Object.getOwnPropertyDescriptor(pWin.HTMLTextAreaElement.prototype, "value").set;
-                        nativeSetter.call(nativeTextarea, val);
+                        nativeSetter.call(nativeTextarea, finalVal);
                         nativeTextarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         nativeTextarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         
@@ -2203,23 +3185,33 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 return Array.from(studioBlock.children).filter(el => el.getAttribute('data-testid') === 'stColumn');
             }}
 
+            function getChatBox() {{
+                const streamingFlag = pDoc.getElementById('streaming-state-flag');
+                if (streamingFlag) {{
+                    const chatCol = streamingFlag.closest('[data-testid="stColumn"]');
+                    if (chatCol) return chatCol;
+                }}
+                const cols = getTopLevelCols();
+                if (cols && cols.length >= 3) {{
+                    const handle = pDoc.getElementById('drag-handle-pill-native');
+                    const nonHandleCols = cols.filter(c => !c.contains(handle));
+                    if (nonHandleCols.length > 0) return nonHandleCols[0];
+                }}
+                return (cols && cols[0]) || pDoc.querySelector('[data-testid="stColumn"]');
+            }}
+
             function syncChatInputPos() {{
                 hideNativeChatInput();
                 ensureCustomChatGPTBar();
-                const cols = getTopLevelCols();
-                const leftCol = cols[0];
+                const chatCol = getChatBox();
                 const bar = pDoc.getElementById('custom-chatgpt-bar');
-                if (leftCol && bar) {{
-                    const rect = leftCol.getBoundingClientRect();
-                    bar.style.left = (rect.left + 8) + 'px';
-                    bar.style.width = Math.max(200, rect.width - 20) + 'px';
+                if (chatCol && bar) {{
+                    const rect = chatCol.getBoundingClientRect();
+                    if (rect.width > 50) {{
+                        bar.style.left = (rect.left + 8) + 'px';
+                        bar.style.width = Math.max(200, rect.width - 20) + 'px';
+                    }}
                 }}
-            }}
-
-            function getChatBox() {{
-                const cols = getTopLevelCols();
-                const chatCol = cols[0];
-                return chatCol;
             }}
 
             function autoScrollChatToBottom(force) {{
@@ -2227,7 +3219,6 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 if (!chatBox) return;
 
                 if (force || userIsNearBottom) {{
-                    // Scorre solo il riquadro della chat a sinistra senza toccare la pagina o il canvas
                     setTimeout(function() {{
                         chatBox.scrollTop = chatBox.scrollHeight;
                     }}, 40);
@@ -2239,7 +3230,6 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 if (!chatBox || window.__scrollListenerBound) return;
                 
                 window.__scrollListenerBound = true;
-                // Usiamo onscroll per sovrascrivere eventuali listener morti di vecchi iframe
                 chatBox.onscroll = function() {{
                     const distanceToBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight;
                     userIsNearBottom = (distanceToBottom <= 140);
@@ -2247,8 +3237,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             }}
 
             function initChatMutationObserver() {{
-                const cols = getTopLevelCols();
-                const chatCol = cols[0];
+                const chatCol = getChatBox();
                 if (!chatCol || window.__observerBound) return;
                 
                 window.__observerBound = true;
@@ -2347,7 +3336,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     syncChatInputPos();
                 }});
                 
-                pDoc.addEventListener('mouseup', function() {{
+                pDoc.addEventListener('mouseup', function(e) {{
                     if (isDragging) {{
                         isDragging = false;
                         pDoc.body.style.cursor = 'default';
@@ -2362,17 +3351,43 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             setTimeout(initPillDrag, 20);
             setTimeout(initChatMutationObserver, 50);
             setTimeout(syncChatInputPos, 50);
+            setTimeout(setupTextSelectionListener, 60);
             setTimeout(function() {{ autoScrollChatToBottom(true); }}, 80);
-            // Backup scroll per coprire i ritardi di rendering di Streamlit
             setTimeout(function() {{ autoScrollChatToBottom(true); }}, 300);
             
-            setInterval(function() {{
+            if (pWin.__canvasStudioInterval) {{
+                clearInterval(pWin.__canvasStudioInterval);
+                pWin.__canvasStudioInterval = null;
+            }}
+            if (pWin.__syncChatResizeListener) {{
+                try {{
+                    window.removeEventListener('resize', pWin.__syncChatResizeListener);
+                    pWin.removeEventListener('resize', pWin.__syncChatResizeListener);
+                }} catch(e) {{}}
+                pWin.__syncChatResizeListener = null;
+            }}
+
+            pWin.__canvasStudioInterval = setInterval(function() {{
+                if (!isCanvasStudioActive()) {{
+                    const b = pDoc.getElementById('custom-chatgpt-bar');
+                    if (b) b.remove();
+                    const p = pDoc.getElementById('selection-mention-pill');
+                    if (p) p.remove();
+                    if (pWin.__canvasStudioInterval) {{
+                        clearInterval(pWin.__canvasStudioInterval);
+                        pWin.__canvasStudioInterval = null;
+                    }}
+                    return;
+                }}
                 readStreamingFlagFromDOM();
                 syncChatInputPos();
                 setupScrollListener();
+                setupTextSelectionListener();
             }}, 150);
             
-            window.addEventListener('resize', syncChatInputPos);
+            pWin.__syncChatResizeListener = syncChatInputPos;
+            window.addEventListener('resize', pWin.__syncChatResizeListener);
+            pWin.addEventListener('resize', pWin.__syncChatResizeListener);
         }})();
         </script>
         """
@@ -2390,9 +3405,22 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 with st.chat_message(msg["role"]):
                     if msg["role"] == "user":
                         st.markdown("<div style='color: #60a5fa; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; text-align: right;'>👤 UTENTE</div>", unsafe_allow_html=True)
+                        user_content = msg["content"]
+                        t_sec, t_instr = extract_targeted_edit_request(user_content)
+                        if t_sec:
+                            preview_snippet = t_sec.splitlines()[0][:90] + ("..." if len(t_sec) > 90 else "")
+                            st.markdown(f"""
+                                <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.35); border-left: 3.5px solid #f59e0b; border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; font-size: 12px; color: #fde68a;">
+                                    <div style="font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #fbbf24; margin-bottom: 2px;">🎯 Modifica mirata su:</div>
+                                    <div style="color: #cbd5e1; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">"{html.escape(preview_snippet)}"</div>
+                                </div>
+                            """, unsafe_allow_html=True)
+                            st.markdown(t_instr)
+                        else:
+                            st.markdown(user_content)
                     else:
                         st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
-                    st.markdown(msg["content"])
+                        st.markdown(msg["content"])
 
             if st.session_state.pending_agent_stream:
                 stream_container = st.empty()
@@ -2407,20 +3435,56 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 try:
                     last_user_prompt = st.session_state.canvas_chat_history[-1]["content"]
                     current_ctx_idx = st.session_state.get("current_version_index", 0)
-                    if st.session_state.get("stream_version_created", False) and current_ctx_idx > 0 and len(st.session_state.get("notes_versions", [])) >= current_ctx_idx:
+                    if st.session_state.get("targeted_base_markdown"):
+                        base_markdown = st.session_state.targeted_base_markdown
+                    elif st.session_state.get("stream_version_created", False) and current_ctx_idx > 0 and len(st.session_state.get("notes_versions", [])) >= current_ctx_idx:
                         base_markdown = st.session_state.notes_versions[current_ctx_idx - 1]
                     else:
                         base_markdown = st.session_state.appunti_generati or ""
 
-                    stream_gen = agent_edit_notes_stream(
-                        current_markdown=base_markdown,
-                        user_instruction=last_user_prompt,
-                        chat_history=st.session_state.canvas_chat_history[:-1],
-                        raw_transcript=st.session_state.testo_estratto,
-                        model_name=MODEL_GENERAL
-                    )
+                    targeted_section, clean_instruction = extract_targeted_edit_request(last_user_prompt)
 
-                    for chunk_text in stream_gen:
+                    if targeted_section:
+                        # FLUSSO RAPIDO: MODIFICA MIRATA DELLA SOLA SEZIONE SELEZIONATA
+                        stream_gen = agent_edit_targeted_stream(
+                            current_markdown=base_markdown,
+                            target_section=targeted_section,
+                            user_instruction=clean_instruction,
+                            chat_history=st.session_state.canvas_chat_history[:-1],
+                            raw_transcript=st.session_state.testo_estratto,
+                            model_name=MODEL_GENERAL
+                        )
+
+                        for chunk_text in stream_gen:
+                            if not chat_bubble_created:
+                                chat_bubble_created = True
+                                with stream_container.container():
+                                    with st.chat_message("assistant"):
+                                        st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
+                                        chat_response_placeholder = st.empty()
+
+                            full_raw_response += chunk_text
+                            live_chat_part, live_replacement = parse_targeted_agent_response(full_raw_response)
+                            
+                            if chat_response_placeholder:
+                                chat_response_placeholder.markdown(live_chat_part)
+                            
+                            if live_replacement and len(live_replacement) > 2:
+                                live_canvas, ok = replace_section_in_markdown(base_markdown, targeted_section, live_replacement)
+                                if ok:
+                                    cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(live_canvas, default_width="50%")
+                                    target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
+                                    if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
+                                        st.session_state.notes_versions[target_idx] = cleaned_live_canvas
+                                    
+                                    st.session_state.appunti_generati = cleaned_live_canvas
+                                    st.session_state._last_valid_appunti = cleaned_live_canvas
+                                    safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
+                                    safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
+                                    safe_set_session_state("notes_sync_bridge_input", cleaned_live_canvas)
+                                    if canvas_placeholder is not None:
+                                        canvas_placeholder.markdown(cleaned_live_canvas, unsafe_allow_html=True)
+
                         if not chat_bubble_created:
                             chat_bubble_created = True
                             with stream_container.container():
@@ -2428,58 +3492,118 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                     st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
                                     chat_response_placeholder = st.empty()
 
-                        full_raw_response += chunk_text
-                        live_chat_part, live_canvas_part = parse_agent_response(full_raw_response)
-                        
-                        if chat_response_placeholder:
-                            chat_response_placeholder.markdown(live_chat_part)
-                        
-                        if live_canvas_part and live_canvas_part != "NO_CHANGE" and len(live_canvas_part) > 5:
-                            cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(live_canvas_part, default_width="50%")
+                        final_chat_reply, final_replacement = parse_targeted_agent_response(full_raw_response)
+                        if final_replacement and len(final_replacement.strip()) > 0:
+                            final_canvas, ok = replace_section_in_markdown(base_markdown, targeted_section, final_replacement)
+                            if ok:
+                                cleaned_canvas = notion_helper.clean_markdown_for_streamlit(final_canvas, default_width="50%")
+                                target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
+                                if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
+                                    st.session_state.notes_versions[target_idx] = cleaned_canvas
+                                st.session_state.appunti_generati = cleaned_canvas
+                                st.session_state._last_valid_appunti = cleaned_canvas
+                                safe_set_session_state("markdown_editor_area", cleaned_canvas)
+                                safe_set_session_state("markdown_editor_area_canvas", cleaned_canvas)
+                                safe_set_session_state("notes_sync_bridge_input", cleaned_canvas)
+                                st.session_state._version_just_switched = True
+                                st.session_state._version_switch_timestamp = time.time()
+                                
+                                st.session_state.force_version_sync = target_idx
+                                st.session_state.canvas_scroll_target_snippet = final_replacement[:300]
+                                st.toast(f"⚡ Sezione aggiornata con successo (Versione {target_idx + 1})!", icon="✏️")
+                            else:
+                                if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
+                                    st.session_state.notes_versions.pop()
+                                    switch_note_version(len(st.session_state.notes_versions) - 1)
+                                st.toast("⚠️ Modifica completata in chat, ma non è stato possibile rintracciare la sezione esatta nel Canvas.", icon="⚠️")
+                                final_chat_reply += f"\n\n> ⚠️ **Nota Canvas:** Non è stato possibile localizzare automaticamente il frammento nel documento per la sostituzione diretta. Ecco il testo modificato:\n\n```markdown\n{final_replacement}\n```"
+                        else:
+                            if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
+                                st.session_state.notes_versions.pop()
+                                switch_note_version(len(st.session_state.notes_versions) - 1)
+                            st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
+
+                        st.session_state.targeted_base_markdown = None
+                        st.session_state.stream_version_created = False
+                        st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply or "Ho modificato la sezione selezionata."})
+                        st.session_state.pending_agent_stream = False
+                        st.rerun()
+
+                    else:
+                        # FLUSSO STANDARD: MODIFICA INTERO DOCUMENTO O SPIEGAZIONI
+                        stream_gen = agent_edit_notes_stream(
+                            current_markdown=base_markdown,
+                            user_instruction=last_user_prompt,
+                            chat_history=st.session_state.canvas_chat_history[:-1],
+                            raw_transcript=st.session_state.testo_estratto,
+                            model_name=MODEL_GENERAL
+                        )
+
+                        for chunk_text in stream_gen:
+                            if not chat_bubble_created:
+                                chat_bubble_created = True
+                                with stream_container.container():
+                                    with st.chat_message("assistant"):
+                                        st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
+                                        chat_response_placeholder = st.empty()
+
+                            full_raw_response += chunk_text
+                            live_chat_part, live_canvas_part = parse_agent_response(full_raw_response)
+                            
+                            if chat_response_placeholder:
+                                chat_response_placeholder.markdown(live_chat_part)
+                            
+                            if live_canvas_part and live_canvas_part != "NO_CHANGE" and len(live_canvas_part) > 5:
+                                cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(live_canvas_part, default_width="50%")
+                                if not st.session_state.get("stream_version_created", False):
+                                    add_note_version(cleaned_live_canvas)
+                                    st.session_state.stream_version_created = True
+                                    st.session_state.stream_target_version_index = st.session_state.current_version_index
+                                else:
+                                    target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
+                                    if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
+                                        st.session_state.notes_versions[target_idx] = cleaned_live_canvas
+                                    
+                                    if st.session_state.get("current_version_index") == target_idx:
+                                        st.session_state.appunti_generati = cleaned_live_canvas
+                                        st.session_state._last_valid_appunti = cleaned_live_canvas
+                                        safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
+                                        safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
+                                        safe_set_session_state("notes_sync_bridge_input", cleaned_live_canvas)
+                                        if canvas_placeholder is not None:
+                                            canvas_placeholder.markdown(cleaned_live_canvas, unsafe_allow_html=True)
+
+                        # Controllo finale: se non ha emesso nulla, crea comunque la bolla
+                        if not chat_bubble_created:
+                            chat_bubble_created = True
+                            with stream_container.container():
+                                with st.chat_message("assistant"):
+                                    st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
+                                    chat_response_placeholder = st.empty()
+
+                        final_chat_reply, final_canvas = parse_agent_response(full_raw_response)
+
+                        if final_canvas and final_canvas != "NO_CHANGE" and len(final_canvas) > 5:
+                            cleaned_canvas = notion_helper.clean_markdown_for_streamlit(final_canvas, default_width="50%")
                             if not st.session_state.get("stream_version_created", False):
-                                add_note_version(cleaned_live_canvas)
-                                st.session_state.stream_version_created = True
-                                st.session_state.stream_target_version_index = st.session_state.current_version_index
+                                add_note_version(cleaned_canvas)
+                                target_idx = st.session_state.current_version_index
                             else:
                                 target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
                                 if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
-                                    st.session_state.notes_versions[target_idx] = cleaned_live_canvas
-                                
-                                if st.session_state.get("current_version_index") == target_idx:
-                                    st.session_state.appunti_generati = cleaned_live_canvas
-                                    st.session_state._last_valid_appunti = cleaned_live_canvas
-                                    safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
-                                    safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
-                                    if canvas_placeholder is not None:
-                                        canvas_placeholder.markdown(cleaned_live_canvas, unsafe_allow_html=True)
-
-                    # Controllo finale: se non ha emesso nulla, crea comunque la bolla
-                    if not chat_bubble_created:
-                        chat_bubble_created = True
-                        with stream_container.container():
-                            with st.chat_message("assistant"):
-                                st.markdown("<div style='color: #34d399; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;'>🤖 ASSISTENTE AI</div>", unsafe_allow_html=True)
-                                chat_response_placeholder = st.empty()
-
-                    final_chat_reply, final_canvas = parse_agent_response(full_raw_response)
-
-                    if final_canvas and final_canvas != "NO_CHANGE" and len(final_canvas) > 5:
-                        cleaned_canvas = notion_helper.clean_markdown_for_streamlit(final_canvas, default_width="50%")
-                        target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
-                        if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
-                            st.session_state.notes_versions[target_idx] = cleaned_canvas
-                        switch_note_version(target_idx)
-                        st.toast(f"⚡ Canvas aggiornato alla Versione {target_idx + 1}! Ricordati di salvare su Notion.", icon="⚠️")
-                    else:
-                        if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
-                            st.session_state.notes_versions.pop()
-                            switch_note_version(len(st.session_state.notes_versions) - 1)
-                        st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
-                        
-                    st.session_state.stream_version_created = False
-                    st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply or "Risposta dell'assistente."})
-                    st.session_state.pending_agent_stream = False
-                    st.rerun()
+                                    st.session_state.notes_versions[target_idx] = cleaned_canvas
+                                switch_note_version(target_idx)
+                            st.toast(f"⚡ Canvas aggiornato alla Versione {target_idx + 1}! Ricordati di salvare su Notion.", icon="⚠️")
+                        else:
+                            if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
+                                st.session_state.notes_versions.pop()
+                                switch_note_version(len(st.session_state.notes_versions) - 1)
+                            st.toast("💬 Risposta fornita in chat.", icon="ℹ️")
+                            
+                        st.session_state.stream_version_created = False
+                        st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply or "Risposta dell'assistente."})
+                        st.session_state.pending_agent_stream = False
+                        st.rerun()
                 except Exception as e:
                     if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
                         st.session_state.notes_versions.pop()
@@ -2495,7 +3619,19 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         if user_input and not st.session_state.pending_agent_stream:
             st.session_state.canvas_chat_history.append({"role": "user", "content": user_input})
             st.session_state.pending_agent_stream = True
-            st.session_state.stream_version_created = False
+            
+            targeted_section, clean_instruction = extract_targeted_edit_request(user_input)
+            if targeted_section:
+                base_text = st.session_state.appunti_generati or ""
+                st.session_state.targeted_base_markdown = base_text
+                # Crea SUBITO la nuova versione clonando la corrente: la UI passa immediatamente a Versione 2
+                add_note_version(base_text)
+                st.session_state.stream_version_created = True
+                st.session_state.stream_target_version_index = st.session_state.current_version_index
+            else:
+                st.session_state.stream_version_created = False
+                st.session_state.targeted_base_markdown = None
+                
             st.rerun()
 
     # Esegui lo script di blocco scroll come ULTIMO elemento della pagina per evitare che Streamlit spinga in giù il layout
@@ -2511,19 +3647,52 @@ else:
     <script>
     (function() {
         const pWin = window.parent || window;
-        const pDoc = window.parent.document;
+        const pDoc = window.parent.document || document;
         
-        // 1. Rimuove la chatbar
-        const bar = pDoc.getElementById('custom-chatgpt-bar');
-        if (bar) {
-            bar.remove();
+        // 1. Arresta tassativamente tutti i timer e gli intervalli del Canvas Studio
+        if (pWin.__canvasStudioInterval) {
+            clearInterval(pWin.__canvasStudioInterval);
+            pWin.__canvasStudioInterval = null;
         }
-        
-        // 2. Sblocca lo scroll che era stato bloccato dal Canvas
+        if (pWin.__syncChatResizeListener) {
+            try {
+                window.removeEventListener('resize', pWin.__syncChatResizeListener);
+                pWin.removeEventListener('resize', pWin.__syncChatResizeListener);
+            } catch(e) {}
+            pWin.__syncChatResizeListener = null;
+        }
         if (pWin.__canvasScrollLock) {
             clearInterval(pWin.__canvasScrollLock);
             pWin.__canvasScrollLock = null;
         }
+        pWin.__canvasSnippetScrolling = false;
+
+        // 2. Rimuove la chatbar e il pill di selezione in modo persistente
+        function removeStudioElements() {
+            const bar = pDoc.getElementById('custom-chatgpt-bar');
+            if (bar) {
+                bar.remove();
+            }
+            const pill = pDoc.getElementById('selection-mention-pill');
+            if (pill) {
+                pill.remove();
+            }
+        }
+        removeStudioElements();
+        pWin.setTimeout(removeStudioElements, 40);
+        pWin.setTimeout(removeStudioElements, 150);
+        pWin.setTimeout(removeStudioElements, 500);
+
+        // 3. Ripristina lo scroll standard della pagina
+        try {
+            if (pWin.history && pWin.history.scrollRestoration) {
+                pWin.history.scrollRestoration = 'auto';
+            }
+        } catch(e) {}
+
+        pWin.__activeQuotedText = null;
+        pWin.__activeQuoteMode = null;
+        pWin.__tempSelectedText = null;
     })();
     </script>
     """
