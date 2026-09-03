@@ -88,29 +88,56 @@ def format_iso_date(date_val) -> str:
 
 def normalize_images_to_markdown(text: str) -> str:
     """
-    Riconverte eventuali blocchi HTML <div class="resizable-img-wrapper"> nel formato standard ![alt|dim](url)
-    in modo che il markdown memorizzato nello stato interno rimanga sempre Markdown pulito.
+    Riconverte blocchi HTML <div class="resizable-img-wrapper"> nel formato standard ![alt](url) o ![alt|dim](url)
+    in modo che il markdown memorizzato nello stato interno, negli editor e su Notion rimanga sempre Markdown pulito.
     """
     if not text or "resizable-img-wrapper" not in text:
         return text
     
-    html_pattern = r'<div class="resizable-img-wrapper"[^>]*data-raw-url="([^"]+)"[^>]*data-raw-alt="([^"]*)"[^>]*style="[^"]*width:\s*([^;%px]+[%px]*)[^"]*"[^>]*>[\s\S]*?</div>\s*</div>'
-    def repl_html(m):
-        raw_url = m.group(1).replace('&quot;', '"')
-        raw_alt = m.group(2).replace('&quot;', '"')
-        w_val = m.group(3).strip()
-        # Se la dimensione è una dimensione custom specifica diversa da standard senza pipe, mantienila
-        if w_val and w_val != "100%" and w_val != "30%" and w_val != "50%":
-            return f"![{raw_alt}|{w_val}]({raw_url})"
-        return f"![{raw_alt}]({raw_url})"
+    def repl_wrapper(m):
+        block = m.group(0)
+        
+        # Estrai URL: prima da data-raw-url, altrimenti da src dell'img
+        url_m = re.search(r'data-raw-url="([^"]+)"', block)
+        if not url_m:
+            url_m = re.search(r'<img[^>]+src="([^"]+)"', block)
+        raw_url = url_m.group(1).replace('&quot;', '"').strip() if url_m else ""
+        
+        # Se l'URL è incapsulato per errore in formato markdown link [url](url), estrai il vero URL
+        link_inside = re.match(r'^\[(https?://[^\]]+)\]\((?:https?://[^\)]+)\)$', raw_url)
+        if link_inside:
+            raw_url = link_inside.group(1).strip()
+
+        # Estrai Alt: prima da data-raw-alt, altrimenti da alt dell'img
+        alt_m = re.search(r'data-raw-alt="([^"]*)"', block)
+        if not alt_m:
+            alt_m = re.search(r'<img[^>]+alt="([^"]*)"', block)
+        raw_alt = alt_m.group(1).replace('&quot;', '"').strip() if alt_m else "Immagine"
+        if not raw_alt:
+            raw_alt = "Immagine"
+
+        # Estrai larghezza custom (se specificata)
+        w_m = re.search(r'width:\s*([^;%"\s]+[%px]*)', block)
+        w_val = w_m.group(1).strip() if w_m else ""
+
+        clean_alt = raw_alt.split("|")[0].strip() or "Immagine"
+        if w_val and w_val not in ["100%", "30%", "50%"]:
+            return f"![{clean_alt}|{w_val}]({raw_url})"
+        else:
+            return f"![{clean_alt}]({raw_url})"
+
+    # Match completo del container resizable-img-wrapper con i suoi div annidati
+    pattern_nested = r'<div class="resizable-img-wrapper"[^>]*>[\s\S]*?</div>\s*</div>\s*</div>(?:\s*</div>)?'
+    cleaned = re.sub(pattern_nested, repl_wrapper, text)
     
-    cleaned = re.sub(html_pattern, repl_html, text)
-    html_pattern_fallback = r'<div class="resizable-img-wrapper"[^>]*data-raw-url="([^"]+)"[^>]*data-raw-alt="([^"]*)"[^>]*>[\s\S]*?</div>\s*</div>'
-    def repl_fallback(m):
-        raw_url = m.group(1).replace('&quot;', '"')
-        raw_alt = m.group(2).replace('&quot;', '"')
-        return f"![{raw_alt}]({raw_url})"
-    return re.sub(html_pattern_fallback, repl_fallback, cleaned)
+    # Fallback per strutture con 2 soli closing div
+    pattern_fallback = r'<div class="resizable-img-wrapper"[^>]*>[\s\S]*?</div>\s*</div>(?:\s*</div>)?'
+    cleaned = re.sub(pattern_fallback, repl_wrapper, cleaned)
+
+    # Pulizia di eventuali tag </div> orfani rimasti subito dopo un tag immagine ![...](...)
+    cleaned = re.sub(r'(!\[[^\]]*\]\([^\)]+\))\s*</div>', r'\1', cleaned)
+
+    return cleaned
 
 def sanitize_latex_formulas(text: str) -> str:
     """
@@ -826,6 +853,7 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
                     lines.append(f"![{caption_text}]({img_url})")
                 
         raw_markdown = "\n\n".join(lines)
+        raw_markdown = normalize_images_to_markdown(raw_markdown)
         return sanitize_latex_formulas(raw_markdown)
     except Exception as e:
         print(f"Errore lettura blocchi da Notion: {e}")
@@ -1039,8 +1067,11 @@ def parse_markdown_table(table_lines: list) -> dict | None:
 def markdown_to_notion_blocks(markdown_text: str):
     """
     Converte una stringa di testo Markdown in una lista di blocchi Notion API,
-    interpretando ed applicando formattazione inline, formule LaTeX, tabelle native, titoli e Callout (📌).
+    interpretando ed applicando formattazione inline, formule LaTeX, tabelle native, titoli, Callout (📌) e Immagini.
     """
+    if not markdown_text:
+        return []
+    markdown_text = normalize_images_to_markdown(markdown_text)
     blocks = []
     lines = markdown_text.splitlines()
     N = len(lines)
@@ -1145,6 +1176,9 @@ def markdown_to_notion_blocks(markdown_text: str):
 
         # 3.5 Immagini Markdown ![alt](url) o ![alt|50%](url)
         img_match = re.match(r'^!\[([^\]]*)\]\(([^)]+)\)$', stripped)
+        if not img_match and "resizable-img-wrapper" in stripped:
+            norm_s = normalize_images_to_markdown(stripped)
+            img_match = re.match(r'^!\[([^\]]*)\]\(([^)]+)\)$', norm_s.strip())
         if img_match:
             alt_text = img_match.group(1) or "Immagine"
             img_url = img_match.group(2).strip()

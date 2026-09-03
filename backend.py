@@ -394,6 +394,7 @@ def agent_edit_notes(current_markdown, user_instruction, chat_history=None, raw_
     if not api_key:
         return False, "Chiave API di Google non trovata. Assicurati di aver configurato GOOGLE_API_KEY.", current_markdown
 
+    current_markdown = notion_helper.normalize_images_to_markdown(current_markdown or "")
     client = genai.Client(api_key=api_key)
 
     history_formatted = ""
@@ -426,6 +427,7 @@ ISTRUZIONE DELL'UTENTE:
         chat_reply, canvas_part = parse_agent_response(raw_text)
         if canvas_part and canvas_part != "NO_CHANGE" and len(canvas_part) > 5:
             updated_markdown = notion_helper.sanitize_latex_formulas(canvas_part)
+            updated_markdown = notion_helper.normalize_images_to_markdown(updated_markdown)
         else:
             updated_markdown = current_markdown
 
@@ -442,6 +444,7 @@ def agent_edit_notes_stream(current_markdown, user_instruction, chat_history=Non
     if not api_key:
         raise ValueError("Chiave API di Google non trovata. Configura GOOGLE_API_KEY.")
 
+    current_markdown = notion_helper.normalize_images_to_markdown(current_markdown or "")
     client = genai.Client(api_key=api_key)
 
     history_formatted = ""

@@ -73,6 +73,9 @@ def safe_sync_version_tabs(new_ver_str):
 
 def add_note_version(new_notes):
     """Aggiunge una nuova versione degli appunti accodandola sempre alla fine."""
+    if not new_notes:
+        return
+    new_notes = notion_helper.normalize_images_to_markdown(new_notes)
     if 'notes_versions' not in st.session_state or not isinstance(st.session_state.notes_versions, list):
         st.session_state.notes_versions = []
     
@@ -97,7 +100,8 @@ def switch_note_version(target_index):
     if 'notes_versions' in st.session_state and 0 <= target_index < len(st.session_state.notes_versions):
         st.session_state.current_version_index = target_index
         st.session_state.force_version_sync = target_index
-        selected_notes = st.session_state.notes_versions[target_index]
+        selected_notes = notion_helper.normalize_images_to_markdown(st.session_state.notes_versions[target_index])
+        st.session_state.notes_versions[target_index] = selected_notes
         st.session_state.appunti_generati = selected_notes
         st.session_state._last_valid_appunti = selected_notes
         st.session_state._version_just_switched = True
@@ -417,11 +421,14 @@ def save_current_notes_to_notion():
     bridge_val = st.session_state.get("notes_sync_bridge_input")
     if 0 <= cur_idx < len(versions):
         if bridge_val and str(bridge_val).strip() and bridge_val != versions[cur_idx]:
-            versions[cur_idx] = bridge_val
-            st.session_state.appunti_generati = bridge_val
-            st.session_state._last_valid_appunti = bridge_val
+            clean_bridge = notion_helper.normalize_images_to_markdown(bridge_val)
+            versions[cur_idx] = clean_bridge
+            st.session_state.appunti_generati = clean_bridge
+            st.session_state._last_valid_appunti = clean_bridge
         elif st.session_state.get("appunti_generati"):
-            versions[cur_idx] = st.session_state.appunti_generati
+            clean_appunti = notion_helper.normalize_images_to_markdown(st.session_state.appunti_generati)
+            versions[cur_idx] = clean_appunti
+            st.session_state.appunti_generati = clean_appunti
 
     # Priorità assoluta alla lezione esplicitamente selezionata / attiva
     target_pid = st.session_state.get("_active_loaded_lesson_id") or st.session_state.get("current_notion_page_id")
@@ -440,7 +447,8 @@ def save_current_notes_to_notion():
         st.session_state._active_loaded_lesson_id = target_pid
 
     if target_pid:
-        markdown_snapshot = str(st.session_state.appunti_generati or "")
+        markdown_snapshot = notion_helper.normalize_images_to_markdown(str(st.session_state.appunti_generati or ""))
+        st.session_state.appunti_generati = markdown_snapshot
         st.session_state._last_saved_notion_notes = markdown_snapshot
         st.session_state._last_saved_version_index = cur_idx
         safe_set_session_state("notes_sync_bridge_input", markdown_snapshot)
@@ -2281,7 +2289,9 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             if st.session_state.canvas_edit_mode_toggle:
                 # Entrando in modalità MODIFICA MANUALE:
                 # Sincronizza esplicitamente il testo attivo della versione corrente nel bridge e nell'editor
-                active_text = st.session_state.get("appunti_generati") or (versions[cur_idx] if 0 <= cur_idx < len(versions) else "")
+                raw_text = st.session_state.get("appunti_generati") or (versions[cur_idx] if 0 <= cur_idx < len(versions) else "")
+                active_text = notion_helper.normalize_images_to_markdown(raw_text)
+                st.session_state.appunti_generati = active_text
                 safe_set_session_state("notes_sync_bridge_input", active_text)
                 safe_set_session_state("markdown_editor_area_canvas", active_text)
                 safe_set_session_state("markdown_editor_area", active_text)
@@ -2292,10 +2302,11 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 # Salva le modifiche digitate manualmente nell'editor dentro appunti_generati e nella versione
                 bridge_val = st.session_state.get("notes_sync_bridge_input")
                 if bridge_val and str(bridge_val).strip():
-                    st.session_state.appunti_generati = bridge_val
-                    st.session_state._last_valid_appunti = bridge_val
+                    clean_bridge = notion_helper.normalize_images_to_markdown(bridge_val)
+                    st.session_state.appunti_generati = clean_bridge
+                    st.session_state._last_valid_appunti = clean_bridge
                     if 0 <= cur_idx < len(versions):
-                        versions[cur_idx] = bridge_val
+                        versions[cur_idx] = clean_bridge
                 st.session_state._version_just_switched = True
                 st.session_state._version_switch_timestamp = time.time()
             st.rerun()
@@ -2303,12 +2314,13 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             if st.session_state.canvas_edit_mode_toggle:
                 bridge_val = st.session_state.get("notes_sync_bridge_input")
                 if bridge_val and str(bridge_val).strip():
-                    st.session_state.appunti_generati = bridge_val
-                    st.session_state._last_valid_appunti = bridge_val
+                    clean_bridge = notion_helper.normalize_images_to_markdown(bridge_val)
+                    st.session_state.appunti_generati = clean_bridge
+                    st.session_state._last_valid_appunti = clean_bridge
                     cur_idx = st.session_state.get("current_version_index", 0)
                     versions = st.session_state.get("notes_versions", [])
                     if 0 <= cur_idx < len(versions):
-                        versions[cur_idx] = bridge_val
+                        versions[cur_idx] = clean_bridge
             st.session_state.show_canvas_chat = False
             st.rerun()
 
@@ -2316,12 +2328,13 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             if st.session_state.canvas_edit_mode_toggle:
                 bridge_val = st.session_state.get("notes_sync_bridge_input")
                 if bridge_val and str(bridge_val).strip():
-                    st.session_state.appunti_generati = bridge_val
-                    st.session_state._last_valid_appunti = bridge_val
+                    clean_bridge = notion_helper.normalize_images_to_markdown(bridge_val)
+                    st.session_state.appunti_generati = clean_bridge
+                    st.session_state._last_valid_appunti = clean_bridge
                     cur_idx = st.session_state.get("current_version_index", 0)
                     versions = st.session_state.get("notes_versions", [])
                     if 0 <= cur_idx < len(versions):
-                        versions[cur_idx] = bridge_val
+                        versions[cur_idx] = clean_bridge
             save_current_notes_to_notion()
 
         if trigger_latex_regen:
@@ -3472,17 +3485,18 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             if live_replacement and len(live_replacement) > 2:
                                 live_canvas, ok = replace_section_in_markdown(base_markdown, targeted_section, live_replacement)
                                 if ok:
-                                    cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(live_canvas, default_width="50%")
+                                    clean_live = notion_helper.normalize_images_to_markdown(live_canvas)
                                     target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
                                     if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
-                                        st.session_state.notes_versions[target_idx] = cleaned_live_canvas
+                                        st.session_state.notes_versions[target_idx] = clean_live
                                     
-                                    st.session_state.appunti_generati = cleaned_live_canvas
-                                    st.session_state._last_valid_appunti = cleaned_live_canvas
-                                    safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
-                                    safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
-                                    safe_set_session_state("notes_sync_bridge_input", cleaned_live_canvas)
+                                    st.session_state.appunti_generati = clean_live
+                                    st.session_state._last_valid_appunti = clean_live
+                                    safe_set_session_state("markdown_editor_area", clean_live)
+                                    safe_set_session_state("markdown_editor_area_canvas", clean_live)
+                                    safe_set_session_state("notes_sync_bridge_input", clean_live)
                                     if canvas_placeholder is not None:
+                                        cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(clean_live, default_width="50%")
                                         canvas_placeholder.markdown(cleaned_live_canvas, unsafe_allow_html=True)
 
                         if not chat_bubble_created:
@@ -3496,15 +3510,15 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         if final_replacement and len(final_replacement.strip()) > 0:
                             final_canvas, ok = replace_section_in_markdown(base_markdown, targeted_section, final_replacement)
                             if ok:
-                                cleaned_canvas = notion_helper.clean_markdown_for_streamlit(final_canvas, default_width="50%")
+                                clean_final = notion_helper.normalize_images_to_markdown(final_canvas)
                                 target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
                                 if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
-                                    st.session_state.notes_versions[target_idx] = cleaned_canvas
-                                st.session_state.appunti_generati = cleaned_canvas
-                                st.session_state._last_valid_appunti = cleaned_canvas
-                                safe_set_session_state("markdown_editor_area", cleaned_canvas)
-                                safe_set_session_state("markdown_editor_area_canvas", cleaned_canvas)
-                                safe_set_session_state("notes_sync_bridge_input", cleaned_canvas)
+                                    st.session_state.notes_versions[target_idx] = clean_final
+                                st.session_state.appunti_generati = clean_final
+                                st.session_state._last_valid_appunti = clean_final
+                                safe_set_session_state("markdown_editor_area", clean_final)
+                                safe_set_session_state("markdown_editor_area_canvas", clean_final)
+                                safe_set_session_state("notes_sync_bridge_input", clean_final)
                                 st.session_state._version_just_switched = True
                                 st.session_state._version_switch_timestamp = time.time()
                                 
@@ -3554,23 +3568,24 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                                 chat_response_placeholder.markdown(live_chat_part)
                             
                             if live_canvas_part and live_canvas_part != "NO_CHANGE" and len(live_canvas_part) > 5:
-                                cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(live_canvas_part, default_width="50%")
+                                clean_live_part = notion_helper.normalize_images_to_markdown(live_canvas_part)
                                 if not st.session_state.get("stream_version_created", False):
-                                    add_note_version(cleaned_live_canvas)
+                                    add_note_version(clean_live_part)
                                     st.session_state.stream_version_created = True
                                     st.session_state.stream_target_version_index = st.session_state.current_version_index
                                 else:
                                     target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
                                     if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
-                                        st.session_state.notes_versions[target_idx] = cleaned_live_canvas
+                                        st.session_state.notes_versions[target_idx] = clean_live_part
                                     
                                     if st.session_state.get("current_version_index") == target_idx:
-                                        st.session_state.appunti_generati = cleaned_live_canvas
-                                        st.session_state._last_valid_appunti = cleaned_live_canvas
-                                        safe_set_session_state("markdown_editor_area", cleaned_live_canvas)
-                                        safe_set_session_state("markdown_editor_area_canvas", cleaned_live_canvas)
-                                        safe_set_session_state("notes_sync_bridge_input", cleaned_live_canvas)
+                                        st.session_state.appunti_generati = clean_live_part
+                                        st.session_state._last_valid_appunti = clean_live_part
+                                        safe_set_session_state("markdown_editor_area", clean_live_part)
+                                        safe_set_session_state("markdown_editor_area_canvas", clean_live_part)
+                                        safe_set_session_state("notes_sync_bridge_input", clean_live_part)
                                         if canvas_placeholder is not None:
+                                            cleaned_live_canvas = notion_helper.clean_markdown_for_streamlit(clean_live_part, default_width="50%")
                                             canvas_placeholder.markdown(cleaned_live_canvas, unsafe_allow_html=True)
 
                         # Controllo finale: se non ha emesso nulla, crea comunque la bolla
@@ -3584,14 +3599,14 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         final_chat_reply, final_canvas = parse_agent_response(full_raw_response)
 
                         if final_canvas and final_canvas != "NO_CHANGE" and len(final_canvas) > 5:
-                            cleaned_canvas = notion_helper.clean_markdown_for_streamlit(final_canvas, default_width="50%")
+                            clean_final = notion_helper.normalize_images_to_markdown(final_canvas)
                             if not st.session_state.get("stream_version_created", False):
-                                add_note_version(cleaned_canvas)
+                                add_note_version(clean_final)
                                 target_idx = st.session_state.current_version_index
                             else:
                                 target_idx = st.session_state.get("stream_target_version_index", st.session_state.current_version_index)
                                 if 'notes_versions' in st.session_state and 0 <= target_idx < len(st.session_state.notes_versions):
-                                    st.session_state.notes_versions[target_idx] = cleaned_canvas
+                                    st.session_state.notes_versions[target_idx] = clean_final
                                 switch_note_version(target_idx)
                             st.toast(f"⚡ Canvas aggiornato alla Versione {target_idx + 1}! Ricordati di salvare su Notion.", icon="⚠️")
                         else:
