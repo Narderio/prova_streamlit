@@ -139,10 +139,48 @@ def normalize_images_to_markdown(text: str) -> str:
 
     return cleaned
 
+def sanitize_mermaid_diagrams(text: str) -> str:
+    """
+    Pulisce e sanifica i diagrammi Mermaid (```mermaid ... ```) per prevenire Parse Error
+    dovuti a etichette di nodi contenenti parentesi, formule o simboli speciali
+    non racchiusi tra virgolette doppie.
+    """
+    if not text or "```mermaid" not in text:
+        return text
+
+    def fix_block(match):
+        code = match.group(1)
+        
+        # 1. Nodi rettangolari: id[Testo con (parentesi) o simboli] -> id["Testo con (parentesi) o simboli"]
+        # Esclude forme composte come [((...))] o [(...)] o ([...])
+        code = re.sub(
+            r'([\w\-\.]+)\s*\[(?![\[\(\/\\])\s*([^"\[\]\r\n]*?[()\{\}][^"\[\]\r\n]*?)\s*\]',
+            r'\1["\2"]',
+            code
+        )
+        
+        # 2. Nodi a rombo: id{Testo con (parentesi) o [quadre]} -> id{"..."}
+        code = re.sub(
+            r'([\w\-\.]+)\s*\{(?![{\(\/\\])\s*([^"\{\}\r\n]*?[()\[\]][^"\{\}\r\n]*?)\s*\}',
+            r'\1{"\2"}',
+            code
+        )
+
+        # 3. Frecce con etichette tipo A -->|etichetta (con parentesi)| B
+        code = re.sub(
+            r'(-->|---|==>|-\.->)\s*\|([^"\|\r\n]*?[()\[\]\{\}][^"\|\r\n]*?)\|\s*',
+            r'\1|"\2"| ',
+            code
+        )
+
+        return '```mermaid\n' + code + '\n```'
+
+    return re.sub(r'```mermaid\s*\r?\n(.*?)\r?\n```', fix_block, text, flags=re.DOTALL | re.IGNORECASE)
+
 def sanitize_latex_formulas(text: str) -> str:
     """
     Pulisce la sintassi LaTeX/Markdown per garantire che Streamlit (KaTeX) e Notion renderizzino
-    le formule senza errori o caratteri rotti.
+    le formule senza errori o caratteri rotti, e sanifica i blocchi di diagrammi Mermaid.
     """
     if not text:
         return ""
@@ -150,6 +188,7 @@ def sanitize_latex_formulas(text: str) -> str:
     cleaned = re.sub(r'\\end\{equation\*?\}', '', cleaned)
     cleaned = re.sub(r'([^\n])\$\$', r'\1\n$$', cleaned)
     cleaned = re.sub(r'\$\$([^\n])', r'$$\n\1', cleaned)
+    cleaned = sanitize_mermaid_diagrams(cleaned)
     return cleaned
 
 def format_markdown_images_for_streamlit(text: str, default_width: str = "30%") -> str:

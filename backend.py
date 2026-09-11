@@ -60,6 +60,9 @@ Se una frase della trascrizione è grammaticalmente rotta ma il significato è c
 Se ci sono formule:
 - usa LaTeX markdown.
 
+Se ci sono diagrammi o schemi Mermaid (```mermaid ... ```):
+- racchiudi SEMPRE tra virgolette doppie le etichette dei nodi che contengono parentesi, formule o simboli speciali, es. A["Jacobiano J(q)"].
+
 Se ci sono codice o comandi:
 - usa blocchi markdown con il linguaggio corretto.
 
@@ -348,6 +351,10 @@ REGOLE TASSATIVE E INVIOLABILI:
    - Se l'utente chiede chiarimenti, spiegazioni o esempi su quel testo, fornisci la spiegazione didattica approfondita sotto <<<CHAT_RESPONSE>>> e mantieni TASSATIVAMENTE NO_CHANGE sotto <<<UPDATED_CANVAS>>>.
    - Se l'utente chiede una modifica, riscrittura, semplificazione o espansione di quel passaggio, aggiorna l'intero documento sotto <<<UPDATED_CANVAS>>> modificando con precisione chirurgica quel punto specifico e preservando inalterato il resto del documento.
 
+6. SINTASSI DIAGRAMMI MERMAID:
+   - Se generi o modifichi diagrammi Mermaid (```mermaid ... ```), racchiudi SEMPRE tra virgolette doppie le etichette dei nodi contenenti parentesi, formule o simboli speciali: es. scrivi A["Jacobiano Geometrico J(Q)"] e MAI A[Jacobiano Geometrico J(Q)].
+   - L'inserimento di parentesi o caratteri matematici non racchiusi tra virgolette doppie dentro forme di nodi come [...], (...), {...} è severamente vietato perché provoca un errore critico di rendering (Parse error).
+
 FORMATO DI RISPOSTA TASSATIVO ED OBBLIGATORIO:
 <<<CHAT_RESPONSE>>>
 [Risposta conversazionale, spiegazioni dei concetti per lo studio o descrizione di cosa hai modificato]
@@ -496,7 +503,8 @@ REGOLE TASSATIVE:
 3. Se nella sezione target o nel contesto sono presenti formule matematiche LaTeX ($...$ o $$...$$), mantienile e formattale con la massima cura e correttezza.
 4. Se la sezione target contiene un tag immagine del tipo `![...](...)`, conservalo intatto salvo diversa e inequivocabile istruzione dell'utente.
 5. TITOLI E INTESTAZIONI: Se la sezione selezionata è un titolo o parte di un titolo (es. `## Titolo`), genera il nuovo titolo con un unico livello appropriato (es. `## Nuovo Titolo` o `### Nuovo Titolo`), evitando tassativamente cancelletti doppi o combinazioni anomale come `## ###`.
-6. Sotto <<<CHAT_RESPONSE>>> scrivi una spiegazione sintetica (1-2 frasi) in cui descrivi cordialmente cosa hai modificato nel passaggio.
+6. DIAGRAMMI MERMAID: Se crei o modifichi diagrammi Mermaid (```mermaid ... ```), racchiudi SEMPRE tra virgolette doppie le etichette dei nodi che contengono parentesi o caratteri speciali (es. A["Jacobiano Geometrico J(Q)"] e MAI A[Jacobiano Geometrico J(Q)]).
+7. Sotto <<<CHAT_RESPONSE>>> scrivi una spiegazione sintetica (1-2 frasi) in cui descrivi cordialmente cosa hai modificato nel passaggio.
 
 FORMATO DI RISPOSTA OBBLIGATORIO:
 <<<CHAT_RESPONSE>>>
