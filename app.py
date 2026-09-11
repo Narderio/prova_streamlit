@@ -13,12 +13,14 @@ import backend
 import notion_helper
 import supabase_client
 import gemini_rate_tracker
+import presentation_helper
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # Ricarica dinamica moduli per garantire che le modifiche al codice backend siano sempre applicate
 importlib.reload(backend)
 importlib.reload(notion_helper)
 importlib.reload(supabase_client)
+importlib.reload(presentation_helper)
 
 from backend import (
     download_and_process, fetch_aggregated_transcript, generate_notes, generate_latex,
@@ -272,6 +274,10 @@ if 'notion_page_url' not in st.session_state:
     st.session_state.notion_page_url = None
 if 'current_notion_page_id' not in st.session_state:
     st.session_state.current_notion_page_id = None
+if 'presentation_html' not in st.session_state:
+    st.session_state.presentation_html = None
+if 'presentation_pdf_bytes' not in st.session_state:
+    st.session_state.presentation_pdf_bytes = None
 if 'show_canvas_chat' not in st.session_state:
     st.session_state.show_canvas_chat = False
 if 'canvas_chat_history' not in st.session_state:
@@ -4327,6 +4333,7 @@ else:
         tabs_to_show = []
         if st.session_state.appunti_generati:
             tabs_to_show.append("📚 Appunti (Markdown)")
+            tabs_to_show.append("🖥️ Presentazione")
         if st.session_state.latex_generato:
             tabs_to_show.append("📄 Codice LaTeX")
         if st.session_state.testo_estratto:
@@ -4338,19 +4345,43 @@ else:
             for i, tab_name in enumerate(tabs_to_show):
                 with tabs[i]:
                     if "Appunti" in tab_name:
-                        col_versions, col_actions = st.columns([1.8, 2.2])
+                        col_versions, col_actions = st.columns([1.5, 2.5])
                         with col_versions:
                             render_version_navigation_bar("main_tab")
                         with col_actions:
-                            btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 1])
+                            btn_c1, btn_c2, btn_c3, btn_c4 = st.columns([1.1, 1.2, 1.1, 1.1])
                             with btn_c1:
                                 if st.button("🎨 Studio Canvas", type="primary", use_container_width=True, key="btn_open_canvas_chat"):
                                     st.session_state.show_canvas_chat = True
                                     st.rerun()
                             with btn_c2:
+                                pres_label = "🖥️ Presentazione" if st.session_state.get("presentation_html") else "✨ Crea Slide"
+                                if st.button(pres_label, use_container_width=True, key="btn_trigger_presentation_top"):
+                                    if not st.session_state.get("presentation_html"):
+                                        with st.spinner("🤖 Generazione slide in corso con Gemini..."):
+                                            try:
+                                                slides = presentation_helper.generate_presentation_slides(
+                                                    st.session_state.appunti_generati,
+                                                    course_name=selected_course,
+                                                    lesson_date=formatted_date_str
+                                                )
+                                                deck_html = presentation_helper.build_html_presentation(
+                                                    slides,
+                                                    course_name=selected_course,
+                                                    lesson_date=formatted_date_str
+                                                )
+                                                st.session_state.presentation_html = deck_html
+                                                pdf_b = presentation_helper.convert_html_to_pdf(deck_html)
+                                                st.session_state.presentation_pdf_bytes = pdf_b
+                                                st.rerun()
+                                            except Exception as e:
+                                                st.error(f"Errore generazione slide: {e}")
+                                    else:
+                                        st.info("Visualizza la presentazione nel tab '🖥️ Presentazione' sottostante.")
+                            with btn_c3:
                                 if st.button("📄 Rigenera LaTeX", use_container_width=True, key="btn_regen_latex_standard", disabled=is_latex_regen_active()):
                                     trigger_background_latex_regen()
-                            with btn_c3:
+                            with btn_c4:
                                 render_notion_save_button_tab()
 
                         st.divider()
@@ -4370,6 +4401,82 @@ else:
                             st.download_button("💾 Scarica .md", st.session_state.appunti_generati, f"appunti_{formatted_date_str.replace('/', '_')}.md")
                         with c2:
                             st_copy_to_clipboard(st.session_state.appunti_generati, "📋 Copia Markdown")
+
+                    elif "Presentazione" in tab_name:
+                        st.subheader("🖥️ Presentazione Didattica a Slide")
+                        if not st.session_state.get("presentation_html"):
+                            st.info("💡 Non hai ancora generato la presentazione a slide per questa lezione. Clicca sul pulsante sottostante per crearla automaticamente a partire dagli appunti.")
+                            if st.button("✨ Genera Presentazione dagli Appunti", type="primary", use_container_width=True, key="btn_generate_presentation_first"):
+                                with st.spinner("🤖 Generazione presentazione in corso con Gemini..."):
+                                    try:
+                                        slides = presentation_helper.generate_presentation_slides(
+                                            st.session_state.appunti_generati,
+                                            course_name=selected_course,
+                                            lesson_date=formatted_date_str
+                                        )
+                                        deck_html = presentation_helper.build_html_presentation(
+                                            slides,
+                                            course_name=selected_course,
+                                            lesson_date=formatted_date_str
+                                        )
+                                        st.session_state.presentation_html = deck_html
+                                        pdf_b = presentation_helper.convert_html_to_pdf(deck_html)
+                                        st.session_state.presentation_pdf_bytes = pdf_b
+                                        st.success("✅ Presentazione generata con successo!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Errore durante la generazione della presentazione: {e}")
+                        else:
+                            col_p1, col_p2, col_p3 = st.columns([1.5, 1.5, 1])
+                            clean_date = formatted_date_str.replace('/', '_')
+                            with col_p1:
+                                pdf_data = st.session_state.get("presentation_pdf_bytes")
+                                if not pdf_data and st.session_state.get("presentation_html"):
+                                    pdf_data = presentation_helper.convert_html_to_pdf(st.session_state.presentation_html)
+                                    st.session_state.presentation_pdf_bytes = pdf_data
+                                
+                                if pdf_data:
+                                    st.download_button(
+                                        "📥 Scarica PDF (16:9)",
+                                        data=pdf_data,
+                                        file_name=f"presentazione_{selected_course}_{clean_date}.pdf",
+                                        mime="application/pdf",
+                                        use_container_width=True
+                                    )
+                                else:
+                                    st.button("📥 PDF (Usa 🖨️ nel player)", disabled=True, use_container_width=True)
+                            with col_p2:
+                                st.download_button(
+                                    "🌐 Scarica HTML Standalone",
+                                    data=st.session_state.presentation_html,
+                                    file_name=f"presentazione_{selected_course}_{clean_date}.html",
+                                    mime="text/html",
+                                    use_container_width=True
+                                )
+                            with col_p3:
+                                if st.button("🔄 Rigenera Slide", use_container_width=True, key="btn_regen_presentation"):
+                                    with st.spinner("Rigenerazione slide in corso..."):
+                                        try:
+                                            slides = presentation_helper.generate_presentation_slides(
+                                                st.session_state.appunti_generati,
+                                                course_name=selected_course,
+                                                lesson_date=formatted_date_str
+                                            )
+                                            deck_html = presentation_helper.build_html_presentation(
+                                                slides,
+                                                course_name=selected_course,
+                                                lesson_date=formatted_date_str
+                                            )
+                                            st.session_state.presentation_html = deck_html
+                                            pdf_b = presentation_helper.convert_html_to_pdf(deck_html)
+                                            st.session_state.presentation_pdf_bytes = pdf_b
+                                            st.success("✅ Presentazione aggiornata!")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Errore durante la rigenerazione: {e}")
+
+                            st.caption("💡 **Comandi:** Usa le frecce della tastiera `←` / `→` o la `Barra Spaziatrice` per sfogliare le slide, `F` o `⛶` per lo schermo intero, `🖨️` per stampare.")
+                            st.iframe(st.session_state.presentation_html, height=580)
 
                     elif "LaTeX" in tab_name:
                         latex_view_mode = st.radio(
