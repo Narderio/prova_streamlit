@@ -522,9 +522,10 @@ def render_notes_sync_bridge():
     }
     </style>
     """, unsafe_allow_html=True)
+    if "notes_sync_bridge_input" not in st.session_state:
+        st.session_state["notes_sync_bridge_input"] = st.session_state.get("appunti_generati", "")
     st.text_area(
         "__notes_sync_bridge__",
-        value=st.session_state.get("appunti_generati", ""),
         key="notes_sync_bridge_input",
         on_change=handle_notes_sync_bridge,
         label_visibility="collapsed"
@@ -3651,8 +3652,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
             st.rerun()
 
     # Esegui lo script di blocco scroll come ULTIMO elemento della pagina per evitare che Streamlit spinga in giù il layout
-    import streamlit.components.v1 as components
-    components.html(canvas_js, height=0)
+    st.iframe(canvas_js, height=1)
 
 # ==============================================================================
 # PAGINA PRINCIPALE: CONFIGURAZIONE FORM & GENERAZIONE
@@ -3712,11 +3712,7 @@ else:
     })();
     </script>
     """
-    import streamlit.components.v1 as components
-    try:
-        st.iframe(cleanup_js, height=1)
-    except AttributeError:
-        components.html(cleanup_js, height=1)
+    st.iframe(cleanup_js, height=1)
 
     @st.dialog("🌟 Scopri le novità")
     def show_onboarding_dialog():
