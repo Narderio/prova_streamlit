@@ -149,45 +149,27 @@ def render_version_navigation_bar(key_prefix=""):
         if current_idx >= len(options):
             current_idx = len(options) - 1
             st.session_state.current_version_index = current_idx
+        elif current_idx < 0:
+            current_idx = 0
+            st.session_state.current_version_index = 0
 
-        widget_key = f"{key_prefix}_ver_segmented_tab"
-        target_str = options[current_idx]
-        
-        # Se è stata richiesta una sincronizzazione forzata della versione dal codice (es. nuova versione creata o switch)
-        forced_idx = st.session_state.get("force_version_sync")
-        if forced_idx is not None and 0 <= forced_idx < len(options):
-            st.session_state.current_version_index = forced_idx
-            target_str = options[forced_idx]
-            safe_set_session_state(widget_key, target_str)
-            # Consuma la richiesta di sync forzato
-            st.session_state.force_version_sync = None
-        elif widget_key not in st.session_state or st.session_state[widget_key] not in options:
-            safe_set_session_state(widget_key, target_str)
-
-        def on_segmented_version_change():
-            val = st.session_state.get(widget_key)
-            if val and val in options:
-                new_i = int(val) - 1
-                if new_i != st.session_state.get("current_version_index"):
-                    switch_note_version(new_i)
+        # Chiave univoca basata sul prefisso e sulla versione attiva:
+        # Elimina alla radice qualsiasi desync di stato React o crash frontend
+        widget_key = f"{key_prefix}_ver_{current_idx}"
 
         selected_v = st.segmented_control(
             "Versione",
             options=options,
+            default=options[current_idx],
             selection_mode="single",
             required=True,
             label_visibility="collapsed",
-            key=widget_key,
-            on_change=on_segmented_version_change
+            key=widget_key
         )
-        
-        # Consuma il flag _version_just_switched in modo che non persista nei render successivi
-        if st.session_state.get("_version_just_switched", False):
-            st.session_state._version_just_switched = False
 
         if selected_v and selected_v in options:
             new_idx = int(selected_v) - 1
-            if new_idx < len(versions) and new_idx != st.session_state.get("current_version_index"):
+            if new_idx != current_idx and 0 <= new_idx < len(versions):
                 switch_note_version(new_idx)
                 st.rerun()
 
@@ -503,9 +485,8 @@ if 'canvas_width_pct' not in st.session_state:
 # --- SCRIPT JAVASCRIPT UNIVERSALE PER INSERIMENTO E RIDIMENSIONAMENTO IMMAGINI (DRAG-TO-RESIZE) ---
 def handle_notes_sync_bridge():
     if st.session_state.get("_version_just_switched", False):
-        st.session_state._version_just_switched = False
         return
-    if time.time() - st.session_state.get("_version_switch_timestamp", 0) < 0.8:
+    if time.time() - st.session_state.get("_version_switch_timestamp", 0) < 1.0:
         return
 
     new_val = st.session_state.get("notes_sync_bridge_input", "")
@@ -1026,11 +1007,14 @@ def generate_image_paste_drop_js():
             e.stopPropagation();
         }}
 
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {{
-            pDoc.addEventListener(eventName, preventDefaults, false);
-            pWin.addEventListener(eventName, preventDefaults, false);
-            pDoc.body.addEventListener(eventName, preventDefaults, false);
-        }});
+        if (!pDoc.__imageDragPreventBound) {{
+            pDoc.__imageDragPreventBound = true;
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {{
+                pDoc.addEventListener(eventName, preventDefaults, false);
+                pWin.addEventListener(eventName, preventDefaults, false);
+                if (pDoc.body) pDoc.body.addEventListener(eventName, preventDefaults, false);
+            }});
+        }}
 
         if (pDoc.__dropHandler) {{
             pDoc.removeEventListener('drop', pDoc.__dropHandler, true);
@@ -1128,23 +1112,26 @@ def inject_scroll_sync_mode_js():
         }
 
         // Listener di scroll per Anteprima: cattura SOLO dal pannello Canvas (colonna 3), MAI dalla chat!
-        pDoc.addEventListener('scroll', function(e) {
-            const el = e.target;
-            if (!el || el === pDoc || el === pDoc.body || el === pDoc.documentElement) return;
-            if (el.tagName === 'TEXTAREA') return;
-            
-            const isInsideCanvas = el.closest('div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3)');
-            if (!isInsideCanvas) return;
+        if (!pDoc.__canvasScrollSyncBound) {
+            pDoc.__canvasScrollSyncBound = true;
+            pDoc.addEventListener('scroll', function(e) {
+                const el = e.target;
+                if (!el || el === pDoc || el === pDoc.body || el === pDoc.documentElement) return;
+                if (el.tagName === 'TEXTAREA') return;
+                
+                const isInsideCanvas = el.closest('div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(3)');
+                if (!isInsideCanvas) return;
 
-            if (el.clientHeight >= 200 && el.clientHeight <= 1000) {
-                if (el.querySelector('h1, h2, h3, p, li')) {
-                    const snip = getVisibleSnippet(el);
-                    if (snip) pWin.__readingSnippet = snip;
-                    const max = el.scrollHeight - el.clientHeight;
-                    if (max > 0) pWin.__readingRatio = el.scrollTop / max;
+                if (el.clientHeight >= 200 && el.clientHeight <= 1000) {
+                    if (el.querySelector('h1, h2, h3, p, li')) {
+                        const snip = getVisibleSnippet(el);
+                        if (snip) pWin.__readingSnippet = snip;
+                        const max = el.scrollHeight - el.clientHeight;
+                        if (max > 0) pWin.__readingRatio = el.scrollTop / max;
+                    }
                 }
-            }
-        }, true);
+            }, true);
+        }
 
         function saveEditorPos(ed) {
             if (!ed) return;
@@ -1481,11 +1468,12 @@ def inject_scroll_sync_mode_js():
             }
         }
 
+        if (pWin.__scrollSyncInterval) {
+            clearInterval(pWin.__scrollSyncInterval);
+            pWin.__scrollSyncInterval = null;
+        }
         checkModeAndSync();
-        const intId = setInterval(checkModeAndSync, 200);
-        window.addEventListener('unload', function() {
-            clearInterval(intId);
-        });
+        pWin.__scrollSyncInterval = setInterval(checkModeAndSync, 250);
     })();
     </script>
     """
@@ -1804,18 +1792,27 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                 }
                 const forceZero = () => {
                     pWin.scrollTo(0, 0);
-                    if (pDoc.documentElement) pDoc.documentElement.scrollTop = 0;
-                    if (pDoc.body) pDoc.body.scrollTop = 0;
+                    if (pDoc.documentElement && pDoc.documentElement.scrollTop !== 0) pDoc.documentElement.scrollTop = 0;
+                    if (pDoc.body && pDoc.body.scrollTop !== 0) pDoc.body.scrollTop = 0;
                     const views = pDoc.querySelectorAll('[data-testid="stAppViewContainer"], .main, [data-testid="stMain"], .block-container');
                     views.forEach(v => {
                         if (v.scrollTop !== 0) v.scrollTop = 0;
                     });
                 };
                 forceZero();
-                pWin.__canvasScrollLock = setInterval(forceZero, 50);
+                if (pWin.__canvasScrollLock) {
+                    clearInterval(pWin.__canvasScrollLock);
+                    pWin.__canvasScrollLock = null;
+                }
+                pWin.__canvasScrollLock = setInterval(forceZero, 100);
                 
                 // Cleanup se l'utente esce dal canvas (es. ricaricando)
-                pWin.addEventListener('unload', () => clearInterval(pWin.__canvasScrollLock));
+                pWin.addEventListener('unload', () => {
+                    if (pWin.__canvasScrollLock) {
+                        clearInterval(pWin.__canvasScrollLock);
+                        pWin.__canvasScrollLock = null;
+                    }
+                });
             } catch(e) {}
         })();
         </script>
@@ -3240,9 +3237,8 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
             function setupScrollListener() {{
                 const chatBox = getChatBox();
-                if (!chatBox || window.__scrollListenerBound) return;
+                if (!chatBox) return;
                 
-                window.__scrollListenerBound = true;
                 chatBox.onscroll = function() {{
                     const distanceToBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight;
                     userIsNearBottom = (distanceToBottom <= 140);
@@ -3251,9 +3247,13 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
             function initChatMutationObserver() {{
                 const chatCol = getChatBox();
-                if (!chatCol || window.__observerBound) return;
+                if (!chatCol) return;
                 
-                window.__observerBound = true;
+                if (pWin.__chatColObserver) {{
+                    try {{ pWin.__chatColObserver.disconnect(); }} catch(e) {{}}
+                    pWin.__chatColObserver = null;
+                }}
+                
                 setupScrollListener();
                 
                 const observer = new MutationObserver(function() {{
@@ -3268,6 +3268,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     subtree: true,
                     characterData: true
                 }});
+                pWin.__chatColObserver = observer;
             }}
 
             function initPillDrag() {{
