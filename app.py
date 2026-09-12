@@ -234,16 +234,46 @@ st.set_page_config(page_title="Appunti Universitari", page_icon="🎓", layout="
 # --- SIDEBAR CONFIGURAZIONE ---
 st.sidebar.title("⚙️ Configurazione")
 
-# 1. Google API Key (senza mai esporre la chiave in .env nell'interfaccia)
-env_key = os.getenv("GOOGLE_API_KEY")
-if env_key:
-    api_key_override = st.sidebar.text_input("Sovrascrivi API Key (opzionale)", type="password", help="Lascia vuoto per usare la chiave in .env")
+# 1. Google API Key (isolata per singola sessione utente, senza inquinare os.environ globale)
+def get_active_google_api_key() -> str | None:
+    """Restituisce l'API key di Google per la sessione corrente, isolata da altri utenti."""
+    override = st.session_state.get("user_google_api_key", "").strip()
+    if override:
+        return override
+    try:
+        if "GOOGLE_API_KEY" in st.secrets:
+            return str(st.secrets["GOOGLE_API_KEY"]).strip()
+    except Exception:
+        pass
+    return os.getenv("GOOGLE_API_KEY")
+
+default_key = os.getenv("GOOGLE_API_KEY")
+if not default_key:
+    try:
+        default_key = st.secrets.get("GOOGLE_API_KEY")
+    except Exception:
+        pass
+
+if default_key:
+    api_key_override = st.sidebar.text_input(
+        "Sovrascrivi API Key (opzionale)",
+        type="password",
+        help="Lascia vuoto per usare la chiave predefinita del server",
+        key="input_api_key_override"
+    )
     if api_key_override.strip():
-        os.environ["GOOGLE_API_KEY"] = api_key_override.strip()
+        st.session_state["user_google_api_key"] = api_key_override.strip()
+    elif "user_google_api_key" in st.session_state and not api_key_override:
+        st.session_state.pop("user_google_api_key", None)
 else:
-    user_api_key = st.sidebar.text_input("Google API Key", type="password", help="Inserisci la tua Google API Key")
+    user_api_key = st.sidebar.text_input(
+        "Google API Key",
+        type="password",
+        help="Inserisci la tua Google API Key",
+        key="input_user_api_key"
+    )
     if user_api_key.strip():
-        os.environ["GOOGLE_API_KEY"] = user_api_key.strip()
+        st.session_state["user_google_api_key"] = user_api_key.strip()
 
 rpm, rpd = gemini_rate_tracker.get_metrics()
 st.sidebar.caption("Monitoraggio Richieste")
@@ -369,9 +399,10 @@ def trigger_background_latex_regen(model=MODEL_GENERAL):
         st.toast("⚠️ Nessun appunto presente per generare il LaTeX.", icon="⚠️")
         return
     
-    def _worker(notes, model):
+    act_key = get_active_google_api_key()
+    def _worker(notes, model, key):
         try:
-            success_lat, latex_res = generate_latex(notes, model_name=model)
+            success_lat, latex_res = generate_latex(notes, model_name=model, api_key=key)
             if success_lat:
                 st.session_state.latex_generato = latex_res
                 st.session_state.latex_regen_error = None
@@ -380,7 +411,7 @@ def trigger_background_latex_regen(model=MODEL_GENERAL):
         except Exception as e:
             st.session_state.latex_regen_error = str(e)
             
-    t = threading.Thread(target=_worker, args=(notes_snap, model), daemon=True)
+    t = threading.Thread(target=_worker, args=(notes_snap, model, act_key), daemon=True)
     add_script_run_ctx(t)
     st.session_state.latex_regen_thread = t
     t.start()
@@ -542,7 +573,8 @@ def render_image_placement_popover(key_suffix="main", button_label="🖼️ Imma
                         placements = image_positioning_helper.analyze_and_match_image_positions(
                             st.session_state.appunti_generati,
                             prepared,
-                            course_name=sel_course
+                            course_name=sel_course,
+                            api_key=get_active_google_api_key()
                         )
                         status.write("📌 Inserimento delle immagini negli appunti...")
                         updated_md, report = image_positioning_helper.inject_images_into_markdown(
@@ -3575,7 +3607,8 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             user_instruction=clean_instruction,
                             chat_history=st.session_state.canvas_chat_history[:-1],
                             raw_transcript=st.session_state.testo_estratto,
-                            model_name=MODEL_GENERAL
+                            model_name=MODEL_GENERAL,
+                            api_key=get_active_google_api_key()
                         )
 
                         for chunk_text in stream_gen:
@@ -3660,7 +3693,8 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                             user_instruction=last_user_prompt,
                             chat_history=st.session_state.canvas_chat_history[:-1],
                             raw_transcript=st.session_state.testo_estratto,
-                            model_name=MODEL_GENERAL
+                            model_name=MODEL_GENERAL,
+                            api_key=get_active_google_api_key()
                         )
 
                         for chunk_text in stream_gen:
@@ -4248,7 +4282,7 @@ else:
             st.error("⛔ Elaborazione bloccata: questa lezione è già stata inserita nel database. Spunta 'Elabora ed esporta comunque' se vuoi rielaborarla.")
             st.stop()
 
-        if (do_markdown_notion or do_latex) and not os.getenv("GOOGLE_API_KEY"):
+        if (do_markdown_notion or do_latex) and not get_active_google_api_key():
             st.error("⚠️ Inserisci la Google API Key prima di procedere.")
         elif do_markdown_notion and not selected_course_page_id:
             st.error("⚠️ Specifica l'ID della pagina Notion 'Corsi' nel file .env (NOTION_CORSI_PAGE_ID).")
@@ -4294,7 +4328,7 @@ else:
                                 st.session_state.testo_estratto = text_tr
 
                     if st.session_state.appunti_generati:
-                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=MODEL_GENERAL)
+                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=MODEL_GENERAL, api_key=get_active_google_api_key())
                         if success_lat:
                             st.session_state.latex_generato = latex_gen
                             st.write("✅ Codice LaTeX generato con successo dagli appunti di Notion!")
@@ -4316,7 +4350,7 @@ else:
 
                     if do_markdown_notion and st.session_state.testo_estratto:
                         status.update(label="🧠 Generazione appunti formattati in corso...")
-                        success_gen, notes_gen = generate_notes(st.session_state.testo_estratto, custom_prompt=final_prompt, model_name=MODEL_NOTES)
+                        success_gen, notes_gen = generate_notes(st.session_state.testo_estratto, custom_prompt=final_prompt, model_name=MODEL_NOTES, api_key=get_active_google_api_key())
                         if success_gen:
                             add_note_version(notes_gen)
                             st.write("✅ Appunti Markdown generati con successo!")
@@ -4327,7 +4361,7 @@ else:
 
                     if do_latex and st.session_state.appunti_generati:
                         status.update(label="📄 Conversione appunti in codice LaTeX in corso...")
-                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=MODEL_GENERAL)
+                        success_lat, latex_gen = generate_latex(st.session_state.appunti_generati, model_name=MODEL_GENERAL, api_key=get_active_google_api_key())
                         if success_lat:
                             st.session_state.latex_generato = latex_gen
                             st.write("✅ Codice LaTeX generato con successo!")
@@ -4467,7 +4501,8 @@ else:
                                                 slides = presentation_helper.generate_presentation_slides(
                                                     st.session_state.appunti_generati,
                                                     course_name=selected_course,
-                                                    lesson_date=formatted_date_str
+                                                    lesson_date=formatted_date_str,
+                                                    api_key=get_active_google_api_key()
                                                 )
                                                 deck_html = presentation_helper.build_html_presentation(
                                                     slides,
@@ -4516,7 +4551,8 @@ else:
                                         slides = presentation_helper.generate_presentation_slides(
                                             st.session_state.appunti_generati,
                                             course_name=selected_course,
-                                            lesson_date=formatted_date_str
+                                            lesson_date=formatted_date_str,
+                                            api_key=get_active_google_api_key()
                                         )
                                         deck_html = presentation_helper.build_html_presentation(
                                             slides,
@@ -4564,7 +4600,8 @@ else:
                                             slides = presentation_helper.generate_presentation_slides(
                                                 st.session_state.appunti_generati,
                                                 course_name=selected_course,
-                                                lesson_date=formatted_date_str
+                                                lesson_date=formatted_date_str,
+                                                api_key=get_active_google_api_key()
                                             )
                                             deck_html = presentation_helper.build_html_presentation(
                                                 slides,

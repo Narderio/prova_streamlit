@@ -21,13 +21,28 @@ def format_iso_date(date_val):
             return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
     return date_str
 
+_SUPABASE_CLIENT_INSTANCE: Client | None = None
+
 def get_supabase_client() -> Client | None:
+    global _SUPABASE_CLIENT_INSTANCE
+    if _SUPABASE_CLIENT_INSTANCE is not None:
+        return _SUPABASE_CLIENT_INSTANCE
+
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     if not url or not key:
+        try:
+            import streamlit as st
+            url = url or st.secrets.get("SUPABASE_URL")
+            key = key or st.secrets.get("SUPABASE_KEY")
+        except Exception:
+            pass
+
+    if not url or not key:
         return None
     try:
-        return create_client(url, key)
+        _SUPABASE_CLIENT_INSTANCE = create_client(url, key)
+        return _SUPABASE_CLIENT_INSTANCE
     except Exception as e:
         print(f"Errore connessione Supabase: {e}")
         return None

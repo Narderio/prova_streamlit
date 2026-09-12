@@ -3,6 +3,7 @@ import re
 import json
 import subprocess
 import tempfile
+import shutil
 from pathlib import Path
 from google import genai
 from google.genai import types
@@ -96,10 +97,36 @@ PRESENTATION_JSON_SCHEMA = {
 
 def find_browser_executable() -> str | None:
     """
-    Rileva la presenza di un browser Chromium-based (Microsoft Edge o Google Chrome)
-    su Windows per l'esportazione headless in PDF.
+    Rileva la presenza di un browser Chromium-based (Microsoft Edge, Google Chrome, Chromium)
+    sia su Windows che su ambienti Linux / Streamlit Community Cloud per l'esportazione headless in PDF.
     """
-    candidates = [
+    # 1. Ricerca tramite PATH di sistema (funziona sia su Linux che Windows se nel PATH)
+    for bin_name in [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "msedge",
+        "chrome"
+    ]:
+        found = shutil.which(bin_name)
+        if found:
+            return found
+
+    # 2. Percorsi noti su Linux (Debian / Ubuntu / Streamlit Cloud)
+    linux_paths = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/snap/bin/chromium",
+    ]
+    for path in linux_paths:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+
+    # 3. Percorsi noti su Windows
+    windows_candidates = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
@@ -107,16 +134,16 @@ def find_browser_executable() -> str | None:
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
     ]
-    for path in candidates:
+    for path in windows_candidates:
         if os.path.isfile(path):
             return path
     return None
 
-def generate_presentation_slides(markdown_notes: str, course_name: str = "", lesson_date: str = "", model_name: str = "gemini-3.5-flash-lite") -> list[dict]:
+def generate_presentation_slides(markdown_notes: str, course_name: str = "", lesson_date: str = "", model_name: str = "gemini-3.5-flash-lite", api_key: str = None) -> list[dict]:
     """
     Interroga Gemini per generare la struttura JSON delle slide a partire dagli appunti della lezione.
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = api_key or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("Chiave API di Google non trovata. Configura GOOGLE_API_KEY nel file .env.")
 
@@ -1182,6 +1209,9 @@ def convert_html_to_pdf(html_content: str) -> bytes | None:
             browser_exe,
             "--headless",
             "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-software-rasterizer",
             "--no-pdf-header-footer",
             "--run-all-compositor-stages-before-draw",
             f"--print-to-pdf={pdf_path}",

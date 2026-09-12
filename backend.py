@@ -246,12 +246,12 @@ def fetch_aggregated_transcript(video_urls: list) -> tuple[bool, str]:
     separator = "\n\n" + ("=" * 60) + "\n\n"
     return True, separator.join(parts)
 
-def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None):
+def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None, api_key=None):
     """
     Invia la trascrizione a Gemini per generare appunti strutturati.
     Default model: gemini-3.5-flash-lite
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = api_key or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         return False, "Chiave API di Google non trovata. Assicurati di aver configurato GOOGLE_API_KEY nel file .env o nella sidebar."
 
@@ -269,11 +269,11 @@ def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None)
     except Exception as e:
         return False, f"Errore durante la generazione degli appunti con {model_name}: {str(e)}"
 
-def generate_latex(markdown_text, model_name="gemini-3.5-flash-lite"):
+def generate_latex(markdown_text, model_name="gemini-3.5-flash-lite", api_key=None):
     """
     Converte gli appunti Markdown in codice LaTeX professionale.
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = api_key or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         return False, "Chiave API di Google non trovata."
 
@@ -391,13 +391,13 @@ def parse_agent_response(raw_text: str) -> tuple[str, str | None]:
         chat_reply = CHAT_TAG_REGEX.sub('', raw_text).strip()
         return chat_reply or "Risposta dell'assistente.", None
 
-def agent_edit_notes(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
+def agent_edit_notes(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite", api_key=None):
     """
     Agente AI per la modifica interattiva degli appunti nel Canvas.
     Riceve il testo attuale del Canvas, la trascrizione grezza originale (se disponibile), l'istruzione dell'utente e lo storico dialogo.
     Restituisce tupla: (success_bool, chat_reply, updated_markdown)
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = api_key or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         return False, "Chiave API di Google non trovata. Assicurati di aver configurato GOOGLE_API_KEY.", current_markdown
 
@@ -442,12 +442,12 @@ ISTRUZIONE DELL'UTENTE:
     except Exception as e:
         return False, f"Errore durante l'elaborazione con l'Agente AI: {str(e)}", current_markdown
 
-def agent_edit_notes_stream(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
+def agent_edit_notes_stream(current_markdown, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite", api_key=None):
     """
     Generatore streaming per l'Agente AI del Canvas.
     Invia i chunk di testo in tempo reale man mano che arrivano dal modello Gemini, includendo la trascrizione grezza originale se fornita.
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = api_key or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("Chiave API di Google non trovata. Configura GOOGLE_API_KEY.")
 
@@ -804,13 +804,13 @@ def replace_section_in_markdown(full_text: str, target_section: str, replacement
 
     return full_text, False
 
-def agent_edit_targeted_stream(current_markdown, target_section, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite"):
+def agent_edit_targeted_stream(current_markdown, target_section, user_instruction, chat_history=None, raw_transcript=None, model_name="gemini-3.5-flash-lite", api_key=None):
     """
     Generatore streaming per la modifica mirata di una singola sezione degli appunti.
     Fornisce l'intero documento Canvas come contesto, ma istruisce il modello a generare SOLO
     il testo sostitutivo per la sezione selezionata.
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = api_key or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("Chiave API di Google non trovata. Configura GOOGLE_API_KEY.")
 

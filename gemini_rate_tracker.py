@@ -33,34 +33,42 @@ def _save_requests(reqs):
     except IOError:
         pass
 
+_IN_MEMORY_TIMESTAMPS: list[datetime] = []
+_INITIALIZED_FROM_DISK = False
+
+def _init_memory_if_needed():
+    global _INITIALIZED_FROM_DISK, _IN_MEMORY_TIMESTAMPS
+    if not _INITIALIZED_FROM_DISK:
+        _INITIALIZED_FROM_DISK = True
+        reqs_str = _load_requests()
+        cutoff_24h = datetime.now() - timedelta(hours=RPD_WINDOW_HOURS)
+        for r_str in reqs_str:
+            try:
+                dt = datetime.fromisoformat(r_str)
+                if dt > cutoff_24h:
+                    _IN_MEMORY_TIMESTAMPS.append(dt)
+            except Exception:
+                pass
+        _IN_MEMORY_TIMESTAMPS.sort()
+
 def _clean_and_get_timestamps(now=None):
-    """Carica e pulisce le richieste più vecchie di 24 ore, ritornando lista di datetime ordinata."""
+    """Carica e pulisce le richieste più vecchie di 24 ore in memoria, ritornando lista di datetime ordinata."""
     if now is None:
         now = datetime.now()
-    reqs_str = _load_requests()
+    _init_memory_if_needed()
     cutoff_24h = now - timedelta(hours=RPD_WINDOW_HOURS)
-    
-    valid_dts = []
-    for r_str in reqs_str:
-        try:
-            dt = datetime.fromisoformat(r_str)
-            if dt > cutoff_24h:
-                valid_dts.append(dt)
-        except (ValueError, TypeError):
-            pass
-            
-    valid_dts.sort()
-    return valid_dts, now
+    global _IN_MEMORY_TIMESTAMPS
+    _IN_MEMORY_TIMESTAMPS = [dt for dt in _IN_MEMORY_TIMESTAMPS if dt > cutoff_24h]
+    return _IN_MEMORY_TIMESTAMPS, now
 
 def get_metrics():
     """
-    Ritorna (richieste_ultimo_minuto, richieste_ultime_24_ore) e pulisce le richieste obsolete.
+    Ritorna (richieste_ultimo_minuto, richieste_ultime_24_ore) in modo ultra-rapido dalla memoria,
+    senza letture/scritture continue su disco.
     """
     with lock:
         now = datetime.now()
         valid_dts, now = _clean_and_get_timestamps(now)
-        _save_requests([dt.isoformat() for dt in valid_dts])
-        
         cutoff_1m = now - timedelta(seconds=RPM_WINDOW_SECONDS)
         rpm_count = sum(1 for dt in valid_dts if dt > cutoff_1m)
         rpd_count = len(valid_dts)

@@ -192,16 +192,17 @@ def analyze_and_match_image_positions(
     markdown_notes: str,
     prepared_images: list[dict],
     course_name: str = "",
-    model_name: str = "gemini-3.5-flash-lite"
+    model_name: str = "gemini-3.5-flash-lite",
+    api_key: str = None
 ) -> list[dict]:
     """
     Esegue UNA SINGOLA CHIAMATA multimodale a Gemini passando il testo del Canvas
     e tutte le immagini compresse per individuare la posizione ideale di ciascuna.
     Restituisce la lista di mappature JSON conformi a IMAGE_PLACEMENT_JSON_SCHEMA.
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = api_key or os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        raise ValueError("GOOGLE_API_KEY non trovata. Configurala nel file .env.")
+        raise ValueError("GOOGLE_API_KEY non trovata. Configurala nel file .env o nella barra laterale.")
 
     if not markdown_notes or not markdown_notes.strip():
         raise ValueError("Il documento degli appunti è vuoto.")
