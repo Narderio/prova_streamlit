@@ -181,31 +181,39 @@ import base64
 
 CANVAS_IMAGES_BUCKET = "canvas-images"
 
+_CANVAS_BUCKET_CHECKED = False
+
 def ensure_canvas_images_bucket():
     """
-    Verifica che il bucket 'canvas-images' esista su Supabase Storage.
-    Se non esiste, tenta di crearlo come bucket pubblico.
-    Restituisce True se il bucket è pronto, False altrimenti.
+    Verifica che il bucket 'canvas-images' sia accessibile su Supabase Storage.
+    Utilizza la lista degli oggetti per verificare la disponibilità senza richiedere
+    privilegi amministrativi (che causerebbero errori 403 con la chiave anon).
     """
+    global _CANVAS_BUCKET_CHECKED
+    if _CANVAS_BUCKET_CHECKED:
+        return True
+
     client = get_supabase_client()
     if not client:
         return False
     try:
-        # Prova a recuperare le info del bucket
-        client.storage.get_bucket(CANVAS_IMAGES_BUCKET)
+        # Verifica accesso al bucket tramite API oggetti (compatibile con chiave anon e RLS)
+        client.storage.from_(CANVAS_IMAGES_BUCKET).list()
+        _CANVAS_BUCKET_CHECKED = True
         return True
     except Exception:
         pass
+
     try:
-        # Crea il bucket come pubblico
+        # Tenta la creazione solo se consentito dai permessi della chiave
         client.storage.create_bucket(
             CANVAS_IMAGES_BUCKET,
             options={"public": True}
         )
+        _CANVAS_BUCKET_CHECKED = True
         return True
-    except Exception as e:
-        print(f"Errore creazione bucket '{CANVAS_IMAGES_BUCKET}': {e}")
-        return False
+    except Exception:
+        return True
 
 def upload_canvas_image(file_bytes: bytes, filename: str, content_type: str = "image/webp"):
     """

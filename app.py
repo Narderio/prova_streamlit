@@ -412,8 +412,12 @@ def save_current_notes_to_notion():
     cur_idx = st.session_state.get("current_version_index", 0)
     versions = st.session_state.get("notes_versions", [])
     bridge_val = st.session_state.get("notes_sync_bridge_input")
+    version_just_switched = st.session_state.get("_version_just_switched", False)
+    is_edit_mode = st.session_state.get("canvas_edit_mode_toggle", False)
+
     if 0 <= cur_idx < len(versions):
-        if bridge_val and str(bridge_val).strip() and bridge_val != versions[cur_idx]:
+        # Il bridge ha priorità SOLO se l'utente è in modalità modifica manuale attiva e non ha appena creato/cambiato versione
+        if is_edit_mode and not version_just_switched and bridge_val and str(bridge_val).strip() and bridge_val != versions[cur_idx]:
             clean_bridge = notion_helper.normalize_images_to_markdown(bridge_val)
             versions[cur_idx] = clean_bridge
             st.session_state.appunti_generati = clean_bridge
@@ -422,6 +426,8 @@ def save_current_notes_to_notion():
             clean_appunti = notion_helper.normalize_images_to_markdown(st.session_state.appunti_generati)
             versions[cur_idx] = clean_appunti
             st.session_state.appunti_generati = clean_appunti
+        else:
+            st.session_state.appunti_generati = versions[cur_idx]
 
     # Priorità assoluta alla lezione esplicitamente selezionata / attiva
     target_pid = st.session_state.get("_active_loaded_lesson_id") or st.session_state.get("current_notion_page_id")
@@ -600,7 +606,7 @@ def render_notes_sync_bridge():
     }
     </style>
     """, unsafe_allow_html=True)
-    if "notes_sync_bridge_input" not in st.session_state:
+    if "notes_sync_bridge_input" not in st.session_state or st.session_state.get("_version_just_switched", False):
         st.session_state["notes_sync_bridge_input"] = st.session_state.get("appunti_generati", "")
     st.text_area(
         "__notes_sync_bridge__",
