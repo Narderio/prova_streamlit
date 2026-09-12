@@ -14,6 +14,7 @@ import notion_helper
 import supabase_client
 import gemini_rate_tracker
 import presentation_helper
+import image_positioning_helper
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # Ricarica dinamica moduli per garantire che le modifiche al codice backend siano sempre applicate
@@ -21,6 +22,7 @@ importlib.reload(backend)
 importlib.reload(notion_helper)
 importlib.reload(supabase_client)
 importlib.reload(presentation_helper)
+importlib.reload(image_positioning_helper)
 
 from backend import (
     download_and_process, fetch_aggregated_transcript, generate_notes, generate_latex,
@@ -96,6 +98,9 @@ def add_note_version(new_notes):
 
     new_ver_str = str(new_idx + 1)
     safe_sync_version_tabs(new_ver_str)
+
+# Alias per compatibilità
+add_new_note_version = add_note_version
 
 def switch_note_version(target_index):
     """Cambia la versione attiva degli appunti in modo atomico."""
@@ -224,7 +229,7 @@ def parse_date_safely(date_val, title_val=""):
     return datetime.date.today()
 
 # --- INIZIO INTERFACCIA STREAMLIT ---
-st.set_page_config(page_title="Vimeo to Notion University Notes", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="Appunti Universitari", page_icon="🎓", layout="wide")
 
 # --- SIDEBAR CONFIGURAZIONE ---
 st.sidebar.title("⚙️ Configurazione")
@@ -236,12 +241,12 @@ if env_key:
     if api_key_override.strip():
         os.environ["GOOGLE_API_KEY"] = api_key_override.strip()
 else:
-    user_api_key = st.sidebar.text_input("Google API Key", type="password", help="Inserisci la tua chiave API per Gemini")
+    user_api_key = st.sidebar.text_input("Google API Key", type="password", help="Inserisci la tua Google API Key")
     if user_api_key.strip():
         os.environ["GOOGLE_API_KEY"] = user_api_key.strip()
 
 rpm, rpd = gemini_rate_tracker.get_metrics()
-st.sidebar.caption("Statistiche API Gemini (Locali)")
+st.sidebar.caption("Monitoraggio Richieste")
 col1, col2 = st.sidebar.columns(2)
 col1.metric("RPM", f"{rpm} / 15", help="Richieste nell'ultimo minuto (attesa automatica al raggiungimento di 13)")
 col2.metric("RPD", f"{rpd} / 500", help="Richieste nelle ultime 24 ore (blocco di sicurezza al raggiungimento di 495)")
@@ -482,6 +487,73 @@ def render_notion_save_button_tab():
         btn_type = "primary" if check_has_unsaved_changes() else "secondary"
         if st.button("📤 Salva su Notion", type=btn_type, use_container_width=True, key="btn_save_edited_notion"):
             save_current_notes_to_notion()
+
+def render_image_placement_popover(key_suffix="main", button_label="🖼️ Immagini", button_help="Inserisci immagini negli appunti"):
+    """
+    Renderizza un popover per il caricamento di immagini o cartelle ZIP,
+    collocandole nelle sezioni corrispondenti degli appunti.
+    """
+    with st.popover(button_label, help=button_help, use_container_width=True):
+        st.markdown("#### 📸 Inserisci Immagini")
+        st.caption(
+            "Carica una cartella (.zip) o seleziona più immagini. "
+            "Verranno collocate automaticamente nelle sezioni corrispondenti degli appunti."
+        )
+        uploader_ver_key = f"batch_img_uploader_ver_{key_suffix}"
+        if uploader_ver_key not in st.session_state:
+            st.session_state[uploader_ver_key] = 0
+        current_uploader_key = f"batch_img_uploader_{key_suffix}_{st.session_state[uploader_ver_key]}"
+
+        uploaded_imgs = st.file_uploader(
+            "Seleziona immagini o archivio .zip",
+            type=["png", "jpg", "jpeg", "webp", "zip"],
+            accept_multiple_files=True,
+            key=current_uploader_key
+        )
+        if uploaded_imgs:
+            st.info(f"📁 {len(uploaded_imgs)} file selezionati")
+            if st.button("✨ Posiziona Immagini", type="primary", use_container_width=True, key=f"btn_run_placement_{key_suffix}"):
+                if not st.session_state.get("appunti_generati"):
+                    st.warning("⚠️ Nessun testo presente negli appunti su cui posizionare le immagini.")
+                    return
+
+                with st.status("Elaborazione immagini in corso...", expanded=True) as status:
+                    status.write("🔍 Lettura ed elaborazione delle immagini...")
+                    prepared = image_positioning_helper.process_uploaded_files(uploaded_imgs)
+                    if not prepared:
+                        status.update(label="❌ Nessuna immagine valida trovata.", state="error")
+                        return
+
+                    status.write("☁️ Salvataggio delle immagini...")
+                    up_ok, err, prepared = image_positioning_helper.upload_images_to_supabase(prepared)
+                    if not up_ok:
+                        status.update(label=f"❌ Errore salvataggio: {err}", state="error")
+                        return
+
+                    status.write("🤖 Individuazione delle sezioni pertinenti...")
+                    try:
+                        sel_course = st.session_state.get("selected_course", "")
+                        placements = image_positioning_helper.analyze_and_match_image_positions(
+                            st.session_state.appunti_generati,
+                            prepared,
+                            course_name=sel_course
+                        )
+                        status.write("📌 Inserimento delle immagini negli appunti...")
+                        updated_md, report = image_positioning_helper.inject_images_into_markdown(
+                            st.session_state.appunti_generati,
+                            placements,
+                            prepared
+                        )
+                        add_note_version(updated_md)
+                        # Reset automatico della selezione file uploader incrementando la versione
+                        st.session_state.pop(current_uploader_key, None)
+                        st.session_state[uploader_ver_key] += 1
+                        status.update(label=f"✅ {len(report)} immagini inserite con successo!", state="complete")
+                        st.toast(f"✅ {len(report)} immagini inserite negli appunti!", icon="🖼️")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        status.update(label=f"❌ Errore durante l'elaborazione: {e}", state="error")
 
 if 'canvas_ratio_mode' not in st.session_state:
     st.session_state.canvas_ratio_mode = "Canvas XXL"
@@ -1009,7 +1081,26 @@ def generate_image_paste_drop_js():
         }};
         pDoc.addEventListener('paste', pDoc.__pasteHandler, true);
 
+        function isEventInsideUploader(e) {{
+            try {{
+                if (!e || !e.target) return false;
+                var el = e.target;
+                if (el.closest && (
+                    el.closest('[data-testid="stFileUploader"]') ||
+                    el.closest('[data-testid="stFileUploaderDropzone"]') ||
+                    el.closest('.stFileUploader') ||
+                    el.closest('input[type="file"]') ||
+                    el.closest('[data-testid="stPopoverBody"]') ||
+                    el.closest('.stPopover')
+                )) {{
+                    return true;
+                }}
+            }} catch(err) {{}}
+            return false;
+        }}
+
         function preventDefaults(e) {{
+            if (isEventInsideUploader(e)) return;
             e.preventDefault();
             e.stopPropagation();
         }}
@@ -1027,6 +1118,9 @@ def generate_image_paste_drop_js():
             pDoc.removeEventListener('drop', pDoc.__dropHandler, true);
         }}
         pDoc.__dropHandler = function(e) {{
+            if (isEventInsideUploader(e)) {{
+                return;
+            }}
             preventDefaults(e);
             
             if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
@@ -1768,7 +1862,7 @@ def render_active_background_operations_banner():
             cards_html += "<div class='floating-notification-card' style='border: 1px solid #3b82f6;'><div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'><span style='color: #60a5fa; font-weight: 600; font-size: 13px;'>📤 Esportazione su Notion in corso...</span><span style='color: #94a3b8; font-size: 11px; margin-left: 12px;'>Background</span></div><div style='width: 100%; background: #1e293b; border-radius: 4px; height: 6px; overflow: hidden;'><div class='custom-progress-bar' style='width: 100%; height: 100%; background-color: #3b82f6;'></div></div></div>"
             
         if is_latex_regen:
-            cards_html += "<div class='floating-notification-card' style='border: 1px solid #10b981;'><div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'><span style='color: #34d399; font-weight: 600; font-size: 13px;'>📄 Generazione LaTeX in corso...</span><span style='color: #94a3b8; font-size: 11px; margin-left: 12px;'>Gemini AI</span></div><div style='width: 100%; background: #1e293b; border-radius: 4px; height: 6px; overflow: hidden;'><div class='custom-progress-bar' style='width: 100%; height: 100%; background-color: #10b981;'></div></div></div>"
+            cards_html += "<div class='floating-notification-card' style='border: 1px solid #10b981;'><div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'><span style='color: #34d399; font-weight: 600; font-size: 13px;'>📄 Generazione LaTeX in corso...</span><span style='color: #94a3b8; font-size: 11px; margin-left: 12px;'>AI</span></div><div style='width: 100%; background: #1e293b; border-radius: 4px; height: 6px; overflow: hidden;'><div class='custom-progress-bar' style='width: 100%; height: 100%; background-color: #10b981;'></div></div></div>"
 
         floating_html = f"<style>@keyframes slide-in-notification {{0% {{ transform: translateY(20px); opacity: 0; }} 100% {{ transform: translateY(0); opacity: 1; }} }} @keyframes progress-bar-stripes {{ 0% {{ background-position: 1rem 0; }} 100% {{ background-position: 0 0; }} }} .floating-notification-container {{ position: fixed !important; bottom: 25px !important; right: 25px !important; z-index: 999999999 !important; display: flex !important; flex-direction: column !important; gap: 10px !important; pointer-events: none !important; }} .floating-notification-card {{ pointer-events: auto !important; background: rgba(15, 23, 42, 0.96) !important; backdrop-filter: blur(10px) !important; border-radius: 10px !important; padding: 12px 16px !important; min-width: 310px !important; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7) !important; animation: slide-in-notification 0.3s ease-out !important; }} .custom-progress-bar {{ background-image: linear-gradient(45deg, rgba(255, 255, 255, .2) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .2) 50%, rgba(255, 255, 255, .2) 75%, transparent 75%, transparent) !important; background-size: 1rem 1rem !important; animation: progress-bar-stripes 1s linear infinite !important; }}</style><div class='floating-notification-container'>{cards_html}</div>"
         st.markdown(floating_html, unsafe_allow_html=True)
@@ -2267,9 +2361,11 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
     # 1. PANNELLO CANVAS A DESTRA (DOCUMENTO MOSTRATO PRIMA PER PERMETTERE IL LIVE STREAMING)
     canvas_placeholder = None
     with col_canvas:
-        col_title, b1, b2, b3, b4 = st.columns([6, 1, 1, 1, 1])
+        col_title, b_img, b1, b2, b3, b4 = st.columns([5.5, 1.1, 1, 1, 1, 1])
         with col_title:
             st.markdown("<h3 style='margin:0; padding:0; color:#ffffff;'>📄 Canvas Appunti</h3>", unsafe_allow_html=True)
+        with b_img:
+            render_image_placement_popover(key_suffix="canvas_bar", button_label="🖼️", button_help="Inserisci immagini negli appunti")
         with b1:
             if 'canvas_edit_mode_toggle' not in st.session_state:
                 st.session_state.canvas_edit_mode_toggle = False
@@ -3727,8 +3823,8 @@ else:
 
         features = [
             {
-                "title": "🔗 Da Vimeo a Notion, in automatico",
-                "desc": "Inserendo il link della lezione, gli appunti vengono elaborati e generati automaticamente in pochi secondi, per poi essere salvati in modo diretto all'interno del database Notion."
+                "title": "🔗 Dalla Lezione agli Appunti, in automatico",
+                "desc": "Inserendo il link della lezione, gli appunti vengono elaborati e generati automaticamente in pochi secondi, per poi essere salvati in modo diretto all'interno del tuo spazio Notion."
             },
             {
                 "title": "🧠 Gestione Intelligente dei Duplicati",
@@ -3776,7 +3872,7 @@ else:
         if st.button("✨ Scopri le Novità", use_container_width=True):
             show_onboarding_dialog()
 
-    st.markdown("Estrai la trascrizione dai video Vimeo, genera ed edita appunti universitari con Gemini e salvali direttamente su **Notion**.")
+    st.markdown("Estrai la trascrizione dai video delle lezioni, crea appunti universitari ordinati e salvali direttamente su **Notion**.")
 
     col_left, col_right = st.columns([2, 1])
 
@@ -3859,7 +3955,7 @@ else:
         st.session_state.selected_course_page_id = selected_course_page_id
 
         # 2. Selettore Lezioni esistenti per la materia selezionata
-        NEW_LESSON_TAG = "✨ -- Nuova Lezione (inserisci link Vimeo) --"
+        NEW_LESSON_TAG = "✨ -- Nuova Lezione (inserisci link) --"
         course_lessons = []
         if selected_course_page_id and notion_token:
             course_lessons = cached_get_course_lessons(selected_course_page_id, selected_course, notion_token)
@@ -3963,7 +4059,7 @@ else:
 
         # 3. Link video Vimeo
         url = st.text_input(
-            "Link video Vimeo",
+            "Link video lezione",
             placeholder="https://vimeo.com/123456789/hash...",
             key="vimeo_url_input",
             on_change=update_saved_vimeo_url
@@ -4042,25 +4138,25 @@ else:
     col_out1, col_out2, col_out3 = st.columns(3)
 
     with col_out1:
-        do_transcript = st.checkbox("📝 Trascrizione Grezza", key="chk_do_transcript", disabled=is_transcript_disabled, help="Estrai il testo originale dal video Vimeo")
+        do_transcript = st.checkbox("📝 Trascrizione Grezza", key="chk_do_transcript", disabled=is_transcript_disabled, help="Estrai il testo originale dal video")
     with col_out2:
-        do_markdown_notion = st.checkbox("📚 Appunti Markdown & Export Notion", key="chk_do_markdown_notion", on_change=sync_latex_reprocess_checkboxes, disabled=is_markdown_disabled, help="Genera appunti formattati con Gemini e salvali su Notion")
+        do_markdown_notion = st.checkbox("📚 Appunti Markdown & Export Notion", key="chk_do_markdown_notion", on_change=sync_latex_reprocess_checkboxes, disabled=is_markdown_disabled, help="Genera appunti formattati e salvali su Notion")
     with col_out3:
         do_latex = st.checkbox("📄 Codice LaTeX", key="chk_do_latex", on_change=sync_latex_reprocess_checkboxes, help="Converti gli appunti Markdown in codice LaTeX per la stampa")
 
     if do_markdown_notion or do_latex:
-        with st.expander("🧠 Configurazione Prompt Gemini", expanded=False):
+        with st.expander("🛠️ Personalizzazione Prompt Appunti", expanded=False):
             prompt_mode = st.radio(
                 "Origine Prompt:",
-                ["Standard Generico", "Prompt Salvato (Supabase)", "Personalizzato / Nuovo"],
+                ["Standard", "Prompt Salvato", "Personalizzato / Nuovo"],
                 horizontal=True
             )
 
             final_prompt = DEFAULT_PROMPT
-            if prompt_mode == "Standard Generico":
+            if prompt_mode == "Standard":
                 st.text_area("Prompt in uso:", DEFAULT_PROMPT, height=150, disabled=True)
             
-            elif prompt_mode == "Prompt Salvato (Supabase)":
+            elif prompt_mode == "Prompt Salvato":
                 saved_prompts = supabase_client.get_saved_prompts()
                 if saved_prompts:
                     prompt_options = {p.get("title", f"Prompt #{p.get('id')}"): p.get("prompt_text") for p in saved_prompts}
@@ -4068,7 +4164,7 @@ else:
                     final_prompt = prompt_options[chosen_title]
                     st.text_area("Testo del prompt selezionato:", final_prompt, height=150)
                 else:
-                    st.warning("Nessun prompt salvato trovato su Supabase. Verrà usato il prompt standard.")
+                    st.warning("Nessun prompt salvato trovato. Verrà usato il prompt standard.")
                     final_prompt = DEFAULT_PROMPT
 
             elif prompt_mode == "Personalizzato / Nuovo":
@@ -4080,11 +4176,11 @@ else:
                 with c_save2:
                     st.write("")
                     st.write("") 
-                    if st.button("💾 Salva in Supabase"):
+                    if st.button("💾 Salva Prompt"):
                         if new_title and final_prompt:
                             success_sp, err_sp = supabase_client.save_prompt(new_title, final_prompt)
                             if success_sp:
-                                st.success("Prompt salvato con successo su Supabase!")
+                                st.success("Prompt salvato con successo!")
                             else:
                                 st.error(f"Errore: {err_sp}")
                         else:
@@ -4147,7 +4243,7 @@ else:
             st.stop()
 
         if (do_markdown_notion or do_latex) and not os.getenv("GOOGLE_API_KEY"):
-            st.error("⚠️ Inserisci la Google API Key prima di procedere con Gemini.")
+            st.error("⚠️ Inserisci la Google API Key prima di procedere.")
         elif do_markdown_notion and not selected_course_page_id:
             st.error("⚠️ Specifica l'ID della pagina Notion 'Corsi' nel file .env (NOTION_CORSI_PAGE_ID).")
         else:
@@ -4202,7 +4298,7 @@ else:
                         st.error("Impossibile recuperare gli appunti da Notion per generare il codice LaTeX.")
                 else:
                     if do_transcript:
-                        status.update(label="📝 Estrazione trascrizione da Vimeo in corso...")
+                        status.update(label="📝 Estrazione trascrizione in corso...")
                         success_tr, text_tr, _ = download_and_process(url)
                         if success_tr:
                             st.session_state.testo_estratto = text_tr
@@ -4213,13 +4309,13 @@ else:
                             st.stop()
 
                     if do_markdown_notion and st.session_state.testo_estratto:
-                        status.update(label="🧠 Generazione appunti formattati con Gemini in corso...")
+                        status.update(label="🧠 Generazione appunti formattati in corso...")
                         success_gen, notes_gen = generate_notes(st.session_state.testo_estratto, custom_prompt=final_prompt, model_name=MODEL_NOTES)
                         if success_gen:
                             add_note_version(notes_gen)
                             st.write("✅ Appunti Markdown generati con successo!")
                         else:
-                            st.error(f"Errore Gemini: {notes_gen}")
+                            st.error(f"Errore generazione appunti: {notes_gen}")
                             status.update(label="❌ Errore durante la generazione appunti", state="error")
                             st.stop()
 
@@ -4345,20 +4441,22 @@ else:
             for i, tab_name in enumerate(tabs_to_show):
                 with tabs[i]:
                     if "Appunti" in tab_name:
-                        col_versions, col_actions = st.columns([1.5, 2.5])
+                        col_versions, col_actions = st.columns([1.3, 2.7])
                         with col_versions:
                             render_version_navigation_bar("main_tab")
                         with col_actions:
-                            btn_c1, btn_c2, btn_c3, btn_c4 = st.columns([1.1, 1.2, 1.1, 1.1])
+                            btn_c1, btn_c_img, btn_c2, btn_c3, btn_c4 = st.columns([1.1, 1.1, 1.2, 1.1, 1.1])
                             with btn_c1:
                                 if st.button("🎨 Studio Canvas", type="primary", use_container_width=True, key="btn_open_canvas_chat"):
                                     st.session_state.show_canvas_chat = True
                                     st.rerun()
+                            with btn_c_img:
+                                render_image_placement_popover(key_suffix="main_tab", button_label="🖼️ Immagini", button_help="Inserisci immagini negli appunti")
                             with btn_c2:
                                 pres_label = "🖥️ Presentazione" if st.session_state.get("presentation_html") else "✨ Crea Slide"
                                 if st.button(pres_label, use_container_width=True, key="btn_trigger_presentation_top"):
                                     if not st.session_state.get("presentation_html"):
-                                        with st.spinner("🤖 Generazione slide in corso con Gemini..."):
+                                        with st.spinner("🤖 Creazione della presentazione in corso..."):
                                             try:
                                                 slides = presentation_helper.generate_presentation_slides(
                                                     st.session_state.appunti_generati,
@@ -4407,7 +4505,7 @@ else:
                         if not st.session_state.get("presentation_html"):
                             st.info("💡 Non hai ancora generato la presentazione a slide per questa lezione. Clicca sul pulsante sottostante per crearla automaticamente a partire dagli appunti.")
                             if st.button("✨ Genera Presentazione dagli Appunti", type="primary", use_container_width=True, key="btn_generate_presentation_first"):
-                                with st.spinner("🤖 Generazione presentazione in corso con Gemini..."):
+                                with st.spinner("🤖 Creazione della presentazione in corso..."):
                                     try:
                                         slides = presentation_helper.generate_presentation_slides(
                                             st.session_state.appunti_generati,
