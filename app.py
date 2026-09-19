@@ -472,7 +472,13 @@ def save_current_notes_to_notion():
         selected_course_page_id = st.session_state.get("selected_course_page_id", notion_corsi_id)
         
         db_id, _ = notion_helper.get_or_create_course_database(selected_course_page_id, selected_course, notion_token)
-        target_pid, _, _ = notion_helper.get_or_create_lesson_entry(db_id, formatted_date_str, is_same_video=already_processed, api_key=notion_token)
+        target_pid, _, _ = notion_helper.get_or_create_lesson_entry(
+            db_id, 
+            formatted_date_str, 
+            is_same_video=already_processed, 
+            api_key=notion_token,
+            topics_title=notion_helper.extract_notes_title(st.session_state.appunti_generati or "")
+        )
         st.session_state.current_notion_page_id = target_pid
         st.session_state._active_loaded_lesson_id = target_pid
 
@@ -4072,6 +4078,12 @@ else:
                     else:
                         st.session_state.testo_estratto = None
 
+                    # Se non presente trascrizione da video/Supabase, tenta recupero diretto dalla sottopagina Trascrizione su Notion
+                    if not st.session_state.testo_estratto:
+                        notion_tr = notion_helper.get_notion_page_transcript(pid, api_key=notion_token)
+                        if notion_tr:
+                            st.session_state.testo_estratto = notion_tr
+
                 st.session_state.latex_generato = None
                 st.session_state.canvas_chat_history = []
                 num_vids = len(video_urls) if video_urls else 0
@@ -4114,7 +4126,7 @@ else:
         )
         st.session_state.saved_lesson_date = lesson_date
         formatted_date_str = lesson_date.strftime("%d/%m/%Y")
-        st.caption(f"Etichetta Lezione: **Lezione {formatted_date_str}**")
+        st.caption(f"Data Lezione: **{formatted_date_str}**")
         st.session_state.formatted_date_str = formatted_date_str
 
         # Se una lezione è attualmente caricata da Notion, mostriamo il badge e il link diretto
@@ -4380,6 +4392,15 @@ else:
                                 st.session_state.appunti_generati,
                                 api_key=notion_token
                             )
+                            # Se presente testo estratto, aggiorniamo/verifichiamo anche la sottopagina Trascrizione
+                            if success_notion and st.session_state.testo_estratto:
+                                client_notion = notion_helper.get_notion_client(notion_token)
+                                if client_notion:
+                                    sub_tr = notion_helper.get_or_create_subpage(client_notion, active_target_pid, "Trascrizione", emoji="🎙️")
+                                    if sub_tr:
+                                        tr_blks = notion_helper.transcript_to_notion_blocks(st.session_state.testo_estratto)
+                                        notion_helper.append_notes_to_page(sub_tr, tr_blks, is_append=False, api_key=notion_token)
+
                             msg_notion = "Pagina Notion aggiornata con successo!" if success_notion else (err_upd or "Errore aggiornamento Notion")
                             notion_page_id = active_target_pid if success_notion else None
                         else:
@@ -4388,6 +4409,7 @@ else:
                                 course_page_id=selected_course_page_id,
                                 lesson_date_str=formatted_date_str,
                                 markdown_text=st.session_state.appunti_generati,
+                                transcript_text=st.session_state.testo_estratto,
                                 is_same_video=already_processed,
                                 api_key=notion_token
                             )

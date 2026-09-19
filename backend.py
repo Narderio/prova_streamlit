@@ -289,33 +289,58 @@ def generate_latex(markdown_text, model_name="gemini-3.5-flash-lite", api_key=No
     except Exception as e:
         return False, f"Errore durante la conversione in LaTeX: {str(e)}"
 
-def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text, is_same_video=False, api_key=None):
+def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text, transcript_text=None, is_same_video=False, api_key=None):
     """
-    Workflow di esportazione su Notion:
+    Workflow di esportazione su Notion con due sottopagine:
     1. Cerca/Crea la tabella del corso su Notion.
-    2. Cerca/Crea la riga della lezione (accoda se video diverso per stessa data, crea versione se stesso video).
-    3. Converte il Markdown in blocchi Notion e li inserisce.
+    2. Estrae il titolo dagli appunti per 'Argomenti trattati'.
+    3. Cerca/Crea la riga della lezione (Lezione N: DD-MM-YYYY).
+    4. Cerca/Crea la sottopagina 'Trascrizione' e inserisce la trascrizione grezza.
+    5. Cerca/Crea la sottopagina 'Appunti' e inserisce gli appunti Markdown formattati.
     Ritorna SEMPRE una tupla a 3 elementi: (success_bool, message_str, page_id_or_none)
     """
+    client = notion_helper.get_notion_client(api_key)
+    if not client:
+        return False, "Client Notion non configurato.", None
+
     # 1. Trova o crea il database del corso
     db_id, err = notion_helper.get_or_create_course_database(course_page_id, course_name, api_key)
     if err or not db_id:
         return False, f"{err}" if err else "Errore preparazione tabella Notion.", None
 
-    # 2. Trova o crea la riga per la lezione/data
-    lesson_page_id, is_existing, err_l = notion_helper.get_or_create_lesson_entry(db_id, lesson_date_str, is_same_video=is_same_video, api_key=api_key)
+    # 2. Estrai il titolo dell'argomento per la colonna 'Argomenti trattati'
+    topics_title = notion_helper.extract_notes_title(markdown_text)
+
+    # 3. Trova o crea la riga per la lezione/data (Lezione N: DD-MM-YYYY)
+    lesson_page_id, is_existing, err_l = notion_helper.get_or_create_lesson_entry(
+        db_id, 
+        lesson_date_str, 
+        is_same_video=is_same_video, 
+        api_key=api_key,
+        topics_title=topics_title
+    )
     if err_l or not lesson_page_id:
         return False, f"{err_l}" if err_l else "Errore creazione riga lezione su Notion.", None
 
-    # 3. Trasforma il Markdown in blocchi Notion
+    # 4. Gestione Sottopagina "Trascrizione"
+    if transcript_text and str(transcript_text).strip():
+        subpage_tr_id = notion_helper.get_or_create_subpage(client, lesson_page_id, "Trascrizione", emoji="🎙️")
+        if subpage_tr_id:
+            tr_blocks = notion_helper.transcript_to_notion_blocks(transcript_text)
+            if tr_blocks:
+                notion_helper.append_notes_to_page(subpage_tr_id, tr_blocks, is_append=is_existing, api_key=api_key)
+
+    # 5. Gestione Sottopagina "Appunti"
+    subpage_app_id = notion_helper.get_or_create_subpage(client, lesson_page_id, "Appunti", emoji="📝")
+    target_notes_id = subpage_app_id or lesson_page_id
+
+    # Converte il Markdown in blocchi Notion e li inserisce
     blocks = notion_helper.markdown_to_notion_blocks(markdown_text)
-
-    # 4. Inserisci i blocchi nella pagina Notion
-    success_app, err_app = notion_helper.append_notes_to_page(lesson_page_id, blocks, is_append=is_existing, api_key=api_key)
+    success_app, err_app = notion_helper.append_notes_to_page(target_notes_id, blocks, is_append=is_existing, api_key=api_key)
     if not success_app:
-        return False, f"{err_app}" if err_app else "Errore scrittura blocchi su Notion.", None
+        return False, f"{err_app}" if err_app else "Errore scrittura blocchi appunti su Notion.", None
 
-    status_msg = "Appunti accodati alla lezione del giorno su Notion!" if is_existing else "Lezione creata con successo su Notion!"
+    status_msg = "Appunti e trascrizione accodati alla lezione del giorno su Notion!" if is_existing else "Lezione creata con successo su Notion con sottopagine Trascrizione e Appunti!"
     return True, status_msg, lesson_page_id
 
 CANVAS_AGENT_PROMPT = """Sei un assistente AI specializzato, affiancato ad un Canvas contenente APPUNTI UNIVERSITARI.

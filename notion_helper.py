@@ -558,16 +558,31 @@ def query_notion_database(client: Client, database_id: str, filter_dict: dict = 
 
 def get_database_schema_props(client: Client, database_id: str):
     """
-    Ispeziona ed allinea lo schema del Database Notion (Notion API v3 data_sources).
-    Garantisce la presenza di:
-    - Colonna Title: 'Lezione'
-    - Colonna Checkbox: 'Appunti'
-    - Colonna Date: 'Data'
+    Ispeziona ed allinea lo schema del Database Notion garantendo la presenza di tutte le colonne:
+    - Lezione (Title)
+    - Prof (People)
+    - Tipo Lezione (Select)
+    - Argomenti trattati (Rich Text)
+    - Appunti (Rich Text)
+    - Voice / Trascription (URL)
+    - Person (People)
+    - Suddivisione Appunti (People)
     """
     target_id, is_data_source = get_target_data_source_id(client, database_id)
     title_prop_name = None
     checkbox_prop_name = None
     date_prop_name = None
+    topics_prop_name = None
+
+    EXPECTED_COLUMNS = {
+        "Prof": {"people": {}},
+        "Tipo Lezione": {"select": {}},
+        "Argomenti trattati": {"rich_text": {}},
+        "Appunti": {"rich_text": {}},
+        "Voice / Trascription": {"url": {}},
+        "Person": {"people": {}},
+        "Suddivisione Appunti": {"people": {}},
+    }
 
     try:
         if is_data_source and hasattr(client, "data_sources"):
@@ -577,22 +592,27 @@ def get_database_schema_props(client: Client, database_id: str):
             db_info = client.databases.retrieve(database_id=target_id)
             props = db_info.get("properties", {})
 
+        existing_names_lower = {}
         for p_name, p_val in props.items():
             p_type = p_val.get("type")
+            p_name_lower = p_name.lower().strip()
+            existing_names_lower[p_name_lower] = p_name
             if p_type == "title":
                 title_prop_name = p_name
             elif p_type == "checkbox":
                 checkbox_prop_name = p_name
             elif p_type == "date":
                 date_prop_name = p_name
+            elif "argoment" in p_name_lower:
+                topics_prop_name = p_name
 
         update_payload = {}
         if title_prop_name and title_prop_name != "Lezione":
             update_payload[title_prop_name] = {"name": "Lezione"}
-        if not checkbox_prop_name:
-            update_payload["Appunti"] = {"checkbox": {}}
-        if not date_prop_name:
-            update_payload["Data"] = {"date": {}}
+
+        for col_name, col_schema in EXPECTED_COLUMNS.items():
+            if col_name.lower().strip() not in existing_names_lower:
+                update_payload[col_name] = col_schema
 
         if update_payload:
             try:
@@ -604,25 +624,34 @@ def get_database_schema_props(client: Client, database_id: str):
                 new_props = upd_res.get("properties", {})
                 for p_name, p_val in new_props.items():
                     p_type = p_val.get("type")
+                    p_name_lower = p_name.lower().strip()
                     if p_type == "title":
                         title_prop_name = p_name
                     elif p_type == "checkbox":
                         checkbox_prop_name = p_name
                     elif p_type == "date":
                         date_prop_name = p_name
+                    elif "argoment" in p_name_lower:
+                        topics_prop_name = p_name
             except Exception as e_upd:
-                print(f"Avviso aggiornamento schema Notion: {e_upd}")
+                print(f"Tentativo inserimento colonne una ad una su Notion ({e_upd})...")
+                for col_k, col_v in update_payload.items():
+                    try:
+                        if is_data_source and hasattr(client, "data_sources"):
+                            client.data_sources.update(data_source_id=target_id, properties={col_k: col_v})
+                        else:
+                            client.databases.update(database_id=target_id, properties={col_k: col_v})
+                    except Exception as e_single_col:
+                        print(f"Avviso creazione colonna '{col_k}' su Notion: {e_single_col}")
     except Exception as e:
         print(f"Avviso lettura schema Notion: {e}")
 
     if not title_prop_name:
         title_prop_name = "Lezione"
-    if not checkbox_prop_name:
-        checkbox_prop_name = "Appunti"
-    if not date_prop_name:
-        date_prop_name = "Data"
+    if not topics_prop_name:
+        topics_prop_name = "Argomenti trattati"
 
-    return title_prop_name, checkbox_prop_name, date_prop_name
+    return title_prop_name, checkbox_prop_name, date_prop_name, topics_prop_name
 
 def get_available_courses(corsi_page_id=None, api_key=None):
     """
@@ -672,7 +701,9 @@ def get_or_create_course_database(course_page_id, course_name="Corso", api_key=N
         blocks = client.blocks.children.list(block_id=clean_id)
         for block in blocks.get("results", []):
             if block.get("type") == "child_database":
-                return block.get("id"), None
+                db_id = block.get("id")
+                get_database_schema_props(client, db_id)
+                return db_id, None
     except Exception as e:
         print(f"Avviso scansione blocchi corso: {e}")
 
@@ -680,6 +711,7 @@ def get_or_create_course_database(course_page_id, course_name="Corso", api_key=N
     try:
         db_info = client.databases.retrieve(database_id=clean_id)
         if db_info and db_info.get("object") == "database":
+            get_database_schema_props(client, clean_id)
             return clean_id, None
     except Exception:
         pass
@@ -692,7 +724,13 @@ def get_or_create_course_database(course_page_id, course_name="Corso", api_key=N
             title=[{"type": "text", "text": {"content": f"Lezioni {course_name}"}}],
             properties={
                 "Lezione": {"title": {}},
-                "Appunti": {"checkbox": {}},
+                "Prof": {"people": {}},
+                "Tipo Lezione": {"select": {}},
+                "Argomenti trattati": {"rich_text": {}},
+                "Appunti": {"rich_text": {}},
+                "Voice / Trascription": {"url": {}},
+                "Person": {"people": {}},
+                "Suddivisione Appunti": {"people": {}},
                 "Data": {"date": {}}
             }
         )
@@ -725,7 +763,7 @@ def get_course_lessons(course_page_id, course_name="Corso", api_key=None) -> lis
         return []
 
     clean_db_id = format_notion_id(db_id)
-    title_prop, checkbox_prop, date_prop = get_database_schema_props(client, clean_db_id)
+    title_prop, checkbox_prop, date_prop, _ = get_database_schema_props(client, clean_db_id)
 
     try:
         query_res = query_notion_database(client, clean_db_id)
@@ -801,11 +839,17 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
     """
     Legge TUTTI i blocchi di una pagina Notion (usando la paginazione completa)
     e ricostruisce fedelmente l'intero testo in formato Markdown.
+    Se la pagina contiene la sottopagina 'Appunti', legge da quella sottopagina.
     """
     client = get_notion_client(api_key)
     if not client or not page_id:
         return ""
     clean_id = format_notion_id(page_id)
+    
+    # Se presente, diamo priorità alla sottopagina dedicata "Appunti"
+    subpages = get_lesson_subpages(client, clean_id)
+    target_id = subpages.get("appunti", clean_id)
+
     try:
         results = []
         has_more = True
@@ -813,7 +857,7 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
 
         # Paginazione completa per recuperare TUTTI i blocchi della pagina (anche oltre 100 blocchi)
         while has_more:
-            kwargs = {"block_id": clean_id}
+            kwargs = {"block_id": target_id}
             if start_cursor:
                 kwargs["start_cursor"] = start_cursor
             
@@ -898,15 +942,199 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
         print(f"Errore lettura blocchi da Notion: {e}")
         return ""
 
+def extract_notes_title(markdown_text: str) -> str:
+    """
+    Estrae il titolo principale o l'argomento dagli appunti Markdown (es. primo `# Titolo`).
+    """
+    if not markdown_text:
+        return ""
+    for line in markdown_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            title = stripped.lstrip("#").strip()
+            title = re.sub(r'^[^\w\s]+', '', title).strip()
+            if title:
+                return title[:100]
+    for line in markdown_text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("---") and not stripped.startswith("!") and not stripped.startswith("<"):
+            return stripped[:100]
+    return ""
+
+def transcript_to_notion_blocks(transcript_text: str) -> list:
+    """
+    Converte il testo grezzo della trascrizione in blocchi Notion sicuri,
+    suddividendoli in paragrafi conformi al limite di 2000 caratteri per rich_text.
+    """
+    if not transcript_text:
+        return []
+
+    blocks = []
+    blocks.append({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": [{"type": "text", "text": {"content": "🎙️ Trascrizione Grezza Audio / Video"}}],
+            "icon": {"type": "emoji", "emoji": "🎙️"}
+        }
+    })
+
+    paragraphs = [p.strip() for p in str(transcript_text).split("\n") if p.strip()]
+    for p in paragraphs:
+        for i in range(0, len(p), 1900):
+            chunk = p[i:i + 1900]
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": chunk}}]
+                }
+            })
+    return blocks
+
+def get_lesson_subpages(client: Client, lesson_page_id: str) -> dict:
+    """
+    Scansiona i blocchi della pagina della lezione alla ricerca di sottopagine 'Trascrizione' e 'Appunti'.
+    Restituisce un dizionario: {"appunti": page_id, "trascrizione": page_id}
+    """
+    clean_id = format_notion_id(lesson_page_id)
+    subpages = {}
+    if not client or not clean_id:
+        return subpages
+    try:
+        results = []
+        has_more = True
+        start_cursor = None
+        while has_more:
+            kwargs = {"block_id": clean_id}
+            if start_cursor:
+                kwargs["start_cursor"] = start_cursor
+            res = client.blocks.children.list(**kwargs)
+            results.extend(res.get("results", []))
+            has_more = res.get("has_more", False)
+            start_cursor = res.get("next_cursor")
+
+        for b in results:
+            if b.get("type") == "child_page":
+                title = b.get("child_page", {}).get("title", "").strip().lower()
+                b_id = b.get("id")
+                if "appunt" in title:
+                    subpages["appunti"] = b_id
+                elif "trascrizion" in title or "transcript" in title:
+                    subpages["trascrizione"] = b_id
+    except Exception as e:
+        print(f"Avviso ricerca sottopagine Notion ({lesson_page_id}): {e}")
+    return subpages
+
+def get_or_create_subpage(client: Client, parent_page_id: str, title: str, emoji: str = "📄") -> str | None:
+    """
+    Trova o crea una sottopagina (child_page) all'interno di parent_page_id.
+    """
+    clean_parent_id = format_notion_id(parent_page_id)
+    if not client or not clean_parent_id:
+        return None
+    subpages = get_lesson_subpages(client, clean_parent_id)
+    key = "appunti" if "appunt" in title.lower() else ("trascrizione" if ("trascrizion" in title.lower() or "transcript" in title.lower()) else title.lower())
+    if key in subpages:
+        return subpages[key]
+
+    try:
+        new_page = client.pages.create(
+            parent={"page_id": clean_parent_id},
+            properties={
+                "title": [{"text": {"content": title}}]
+            },
+            icon={"type": "emoji", "emoji": emoji}
+        )
+        return new_page.get("id")
+    except Exception as e:
+        print(f"Errore creazione sottopagina '{title}': {e}")
+        return None
+
+def get_notion_page_transcript(page_id: str, api_key=None) -> str:
+    """
+    Legge la trascrizione grezza dalla sottopagina 'Trascrizione', se presente.
+    """
+    client = get_notion_client(api_key)
+    if not client or not page_id:
+        return ""
+    clean_id = format_notion_id(page_id)
+    subpages = get_lesson_subpages(client, clean_id)
+    tr_id = subpages.get("trascrizione")
+    if not tr_id:
+        return ""
+    
+    try:
+        results = []
+        has_more = True
+        start_cursor = None
+        while has_more:
+            kwargs = {"block_id": tr_id}
+            if start_cursor:
+                kwargs["start_cursor"] = start_cursor
+            response = client.blocks.children.list(**kwargs)
+            results.extend(response.get("results", []))
+            has_more = response.get("has_more", False)
+            start_cursor = response.get("next_cursor")
+            
+        paragraphs = []
+        for b in results:
+            b_type = b.get("type")
+            if b_type == "paragraph":
+                r_text = b.get("paragraph", {}).get("rich_text", [])
+                text = "".join([t.get("plain_text", "") for t in r_text])
+                if text:
+                    paragraphs.append(text)
+        return "\n\n".join(paragraphs)
+    except Exception as e:
+        print(f"Avviso lettura trascrizione Notion: {e}")
+        return ""
+
+def get_next_lesson_number(client: Client, database_id: str, title_prop: str) -> int:
+    """
+    Calcola il numero progressivo N della prossima lezione (Lezione N) per il database del corso.
+    """
+    try:
+        query_res = query_notion_database(client, database_id)
+        results = query_res.get("results", []) if isinstance(query_res, dict) else []
+        numbers = []
+        for page in results:
+            t_list = page.get("properties", {}).get(title_prop, {}).get("title", [])
+            title_str = t_list[0].get("plain_text", "").strip() if t_list else ""
+            m = re.search(r'lezione\s*(\d+)', title_str, re.IGNORECASE)
+            if m:
+                numbers.append(int(m.group(1)))
+        if numbers:
+            return max(numbers) + 1
+        return len(results) + 1
+    except Exception as e:
+        print(f"Avviso calcolo progressivo lezione: {e}")
+        return 1
+
 def update_notion_page_in_place(lesson_page_id, markdown_text, api_key=None):
     """
-    Svuota i blocchi esistenti della pagina Notion e vi riscrive i nuovi blocchi in ordine esatto.
+    Svuota i blocchi esistenti della sottopagina 'Appunti' (o della pagina stessa se legacy)
+    e vi riscrive i nuovi blocchi in ordine esatto, preservando intatta la sottopagina 'Trascrizione'.
     """
-    return overwrite_notion_page(lesson_page_id, markdown_text, api_key=api_key)
+    client = get_notion_client(api_key)
+    if not client or not lesson_page_id:
+        return False, "Client Notion o Page ID mancante."
+
+    clean_page_id = format_notion_id(lesson_page_id)
+    subpages = get_lesson_subpages(client, clean_page_id)
+    
+    if "appunti" in subpages:
+        target_page_id = subpages["appunti"]
+    elif "trascrizione" in subpages:
+        target_page_id = get_or_create_subpage(client, clean_page_id, "Appunti", emoji="📝") or clean_page_id
+    else:
+        target_page_id = clean_page_id
+
+    return overwrite_notion_page(target_page_id, markdown_text, api_key=api_key)
 
 def overwrite_notion_page(lesson_page_id, markdown_text, api_key=None):
     """
-    Fallback: Svuota i blocchi esistenti della pagina Notion e vi scrive i nuovi blocchi.
+    Fallback: Svuota i blocchi esistenti della pagina/sottopagina Notion e vi scrive i nuovi blocchi.
     """
     client = get_notion_client(api_key)
     if not client or not lesson_page_id:
@@ -948,12 +1176,15 @@ def overwrite_notion_page(lesson_page_id, markdown_text, api_key=None):
     # 3. Inserisce i nuovi blocchi nella pagina svuotata
     return append_notes_to_page(lesson_page_id, blocks, is_append=False, api_key=api_key)
 
-def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False, api_key=None):
+def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False, api_key=None, topics_title=""):
     """
     Trova o crea la riga della lezione per la data specificata nella tabella.
-    - Se la data coincide MA il video è DIVERSO (is_same_video=False): accoda gli appunti alla prima versione originale.
+    - Titolo progressivo: 'Lezione N: DD-MM-YYYY'
+    - Popola 'Argomenti trattati' con il titolo degli appunti
+    - Lascia vuote le altre colonne (Prof, Tipo Lezione, Voice / Trascription, Person, ecc.)
+    - Se la data coincide MA il video è DIVERSO (is_same_video=False): accoda alla prima versione originale.
     - Se è lo STESSO video rielaborato (is_same_video=True): crea una nuova riga distinta per la versione (Versione X).
-    Restituisce (page_id, is_existing).
+    Restituisce (page_id, is_existing, err_msg).
     """
     client = get_notion_client(api_key)
     if not client or not database_id:
@@ -961,24 +1192,32 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False
 
     clean_db_id = format_notion_id(database_id)
     target_id, is_data_source = get_target_data_source_id(client, clean_db_id)
-    title_prop, checkbox_prop, date_prop = get_database_schema_props(client, clean_db_id)
-    base_lesson_title = f"Lezione {lesson_date_str}"
+    title_prop, checkbox_prop, date_prop, topics_prop = get_database_schema_props(client, clean_db_id)
+    
+    clean_date_dashes = lesson_date_str.strip().replace("/", "-")
+    clean_date_slashes = lesson_date_str.strip().replace("-", "/")
     iso_date = format_iso_date(lesson_date_str)
 
-    filter_dict = {
-        "property": title_prop,
-        "title": {
-            "contains": lesson_date_str
-        }
-    }
-
     try:
-        query_res = query_notion_database(client, clean_db_id, filter_dict)
+        query_res = query_notion_database(client, clean_db_id)
         results = query_res.get("results", []) if isinstance(query_res, dict) else []
         
+        # Cerca corrispondenze per la data (sia trattini che barre o campo data ISO)
+        matched_results = []
+        for page in results:
+            props = page.get("properties", {})
+            t_list = props.get(title_prop, {}).get("title", [])
+            title_str = t_list[0].get("plain_text", "").strip() if t_list else ""
+            
+            d_val = props.get(date_prop, {}).get("date") if date_prop else None
+            page_iso_date = d_val.get("start") if d_val else None
+
+            if clean_date_dashes in title_str or clean_date_slashes in title_str or (page_iso_date and page_iso_date == iso_date):
+                matched_results.append(page)
+        
         # CASO A: La data coincide MA il link video è DIVERSO (is_same_video=False) -> ACCODA alla prima versione originale del giorno!
-        if results and not is_same_video:
-            first_page_id = find_original_version_page(results, title_prop)
+        if matched_results and not is_same_video:
+            first_page_id = find_original_version_page(matched_results, title_prop)
             if checkbox_prop:
                 try:
                     client.pages.update(
@@ -990,27 +1229,62 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False
             return first_page_id, True, None
 
         # CASO B: Lo STESSO link video viene rielaborato (is_same_video=True) -> Crea una NUOVA RIGA per la versione!
-        if results and is_same_video:
-            version_num = len(results) + 1
-            lesson_title = f"{base_lesson_title} (Versione {version_num})"
+        if matched_results and is_same_video:
+            first_page = matched_results[0]
+            first_props = first_page.get("properties", {})
+            first_t_list = first_props.get(title_prop, {}).get("title", [])
+            first_title_str = first_t_list[0].get("plain_text", "").strip() if first_t_list else ""
+            m_num = re.search(r'lezione\s*(\d+)', first_title_str, re.IGNORECASE)
+            lesson_num = int(m_num.group(1)) if m_num else get_next_lesson_number(client, clean_db_id, title_prop)
+            version_num = len(matched_results) + 1
+            lesson_title = f"Lezione {lesson_num} - {clean_date_slashes} (Versione {version_num})"
         else:
-            lesson_title = base_lesson_title
+            lesson_num = get_next_lesson_number(client, clean_db_id, title_prop)
+            lesson_title = f"Lezione {lesson_num} - {clean_date_slashes}"
 
     except Exception as e:
         print(f"Avviso ricerca riga esistente lezione su Notion: {e}")
-        lesson_title = base_lesson_title
+        lesson_title = f"Lezione - {clean_date_slashes}"
 
-    # Crea la nuova riga con il valore del campo Data impostato al formato ISO YYYY-MM-DD
+    # Crea la nuova riga impostando Lezione, Argomenti trattati, Data e le altre colonne
     try:
         page_props = {
             title_prop: {
                 "title": [{"text": {"content": lesson_title}}]
             }
         }
+        if topics_prop and topics_title:
+            page_props[topics_prop] = {
+                "rich_text": [{"text": {"content": str(topics_title)[:2000]}}]
+            }
         if checkbox_prop:
             page_props[checkbox_prop] = {"checkbox": True}
         if date_prop:
             page_props[date_prop] = {"date": {"start": iso_date}}
+
+        # Includi esplicitamente le colonne attese se presenti nello schema
+        try:
+            if is_data_source and hasattr(client, "data_sources"):
+                s_info = client.data_sources.retrieve(data_source_id=target_id)
+                db_schema = s_info.get("properties", {})
+            else:
+                d_info = client.databases.retrieve(database_id=target_id)
+                db_schema = d_info.get("properties", {})
+        except Exception:
+            db_schema = {}
+
+        for p_name, p_val in db_schema.items():
+            p_type = p_val.get("type")
+            if p_name in page_props:
+                continue
+            if p_type == "people":
+                page_props[p_name] = {"people": []}
+            elif p_type == "select":
+                page_props[p_name] = {"select": None}
+            elif p_type == "url":
+                page_props[p_name] = {"url": None}
+            elif p_type == "rich_text":
+                page_props[p_name] = {"rich_text": []}
 
         parent_dict = {"data_source_id": target_id} if is_data_source else {"database_id": target_id}
 
@@ -1021,6 +1295,7 @@ def get_or_create_lesson_entry(database_id, lesson_date_str, is_same_video=False
             )
             return new_page.get("id"), False, None
         except Exception as e_create:
+            # Fallback minimo in caso di vincoli rigidi sulle colonne secondarie
             new_page = client.pages.create(
                 parent=parent_dict,
                 properties={
