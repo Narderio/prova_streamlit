@@ -5,3 +5,4 @@ __pycache__/
 .streamlit/
 gemini_requests.json
 videos/*
+.session_cache/

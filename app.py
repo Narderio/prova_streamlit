@@ -15,6 +15,7 @@ import supabase_client
 import gemini_rate_tracker
 import presentation_helper
 import image_positioning_helper
+import session_manager
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # Ricarica dinamica moduli per garantire che le modifiche al codice backend siano sempre applicate
@@ -23,6 +24,8 @@ importlib.reload(notion_helper)
 importlib.reload(supabase_client)
 importlib.reload(presentation_helper)
 importlib.reload(image_positioning_helper)
+importlib.reload(session_manager)
+
 
 from backend import (
     download_and_process, fetch_aggregated_transcript, generate_notes, generate_latex,
@@ -98,6 +101,7 @@ def add_note_version(new_notes):
 
     new_ver_str = str(new_idx + 1)
     safe_sync_version_tabs(new_ver_str)
+    session_manager.auto_save_session()
 
 # Alias per compatibilità
 add_new_note_version = add_note_version
@@ -120,6 +124,7 @@ def switch_note_version(target_index):
 
         new_ver_str = str(target_index + 1)
         safe_sync_version_tabs(new_ver_str)
+        session_manager.auto_save_session()
 
 def update_appunti_from_editor():
     if st.session_state.get("_version_just_switched", False):
@@ -141,6 +146,7 @@ def update_appunti_from_editor():
                 st.session_state.notes_versions[idx] = updated_val
                 st.session_state.appunti_generati = updated_val
                 st.session_state._last_valid_appunti = updated_val
+                session_manager.auto_save_session()
 
 def render_version_navigation_bar(key_prefix=""):
     versions = st.session_state.get("notes_versions", [])
@@ -288,11 +294,24 @@ elif rpm >= 13:
 
 st.sidebar.divider()
 
+# Gestione Sessione di Lavoro (Autosave & Ripristino)
+st.sidebar.caption("💾 Sessione di Lavoro")
+curr_sess_id = session_manager.get_current_session_id()
+st.sidebar.markdown(f"<div style='font-size:11.5px; color:#94a3b8; margin-bottom:8px;'>ID Sessione: <code>{curr_sess_id}</code></div>", unsafe_allow_html=True)
+if st.sidebar.button("🧹 Nuova Sessione / Pulisci", key="btn_reset_session_sidebar", help="Cancella la sessione corrente salvata e ricomincia con una schermata pulita"):
+    session_manager.reset_session()
+    st.toast("Nuova sessione avviata!", icon="🧹")
+    st.rerun()
+
+st.sidebar.divider()
+
 # Modelli Gemini configurati per l'applicazione (Default: gemini-3.5-flash-lite)
 MODEL_NOTES = "gemini-3.5-flash-lite"
 MODEL_GENERAL = "gemini-3.5-flash-lite"
 
-# --- INIZIALIZZAZIONE SESSION STATE ---
+# --- INIZIALIZZAZIONE E RIPRISTINO SESSION STATE ---
+session_manager.restore_session_if_available()
+session_manager.cleanup_old_sessions()
 if 'testo_estratto' not in st.session_state:
     st.session_state.testo_estratto = None
 if 'appunti_generati' not in st.session_state:
@@ -2646,7 +2665,18 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
 
     # 3. PANNELLO CHAT (SINISTRA) - STREAMING IN TEMPO REALE SUL CANVAS E SULLA CHAT
     with col_chat:
-        st.markdown("<h3 style='margin:0 0 0.8rem 0; color:#ffffff;'>💬 Chatbot Assistant</h3>", unsafe_allow_html=True)
+        chat_hdr_col1, chat_hdr_col2 = st.columns([0.62, 0.38], vertical_alignment="center")
+        with chat_hdr_col1:
+            st.markdown("<h3 style='margin:0; color:#ffffff; font-size:1.25rem;'>💬 Chatbot Assistant</h3>", unsafe_allow_html=True)
+        with chat_hdr_col2:
+            has_chat_messages = bool(st.session_state.get("canvas_chat_history"))
+            if st.button("🗑️ Cancella chat", key="btn_clear_canvas_chat", disabled=not has_chat_messages, help="Cancella la cronologia della conversazione corrente", use_container_width=True):
+                st.session_state.canvas_chat_history = []
+                st.session_state.pending_agent_stream = False
+                st.session_state.pop("targeted_base_markdown", None)
+                session_manager.auto_save_session()
+                st.toast("Chat del Canvas cancellata!", icon="🗑️")
+                st.rerun()
 
         # --- INIEZIONE BARRA CHAT PERSONALIZZATA STILE CHATGPT E GESTIONE PILLOLA #drag-handle-pill-native ---
         is_streaming_js = "true" if st.session_state.pending_agent_stream else "false"
@@ -3690,6 +3720,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         st.session_state.stream_version_created = False
                         st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply or "Ho modificato la sezione selezionata."})
                         st.session_state.pending_agent_stream = False
+                        session_manager.auto_save_session()
                         st.rerun()
 
                     else:
@@ -3768,6 +3799,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         st.session_state.stream_version_created = False
                         st.session_state.canvas_chat_history.append({"role": "assistant", "content": final_chat_reply or "Risposta dell'assistente."})
                         st.session_state.pending_agent_stream = False
+                        session_manager.auto_save_session()
                         st.rerun()
                 except Exception as e:
                     if st.session_state.get("stream_version_created", False) and len(st.session_state.get("notes_versions", [])) > 1:
@@ -3777,6 +3809,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     st.session_state.stream_version_created = False
                     st.error(f"❌ Errore durante la risposta dell'Assistente: {str(e)}")
                     st.session_state.canvas_chat_history.append({"role": "assistant", "content": f"⚠️ Si è verificato un errore durante l'elaborazione: {str(e)}"})
+                    session_manager.auto_save_session()
                     st.rerun()
 
         # Campo chat_input nativo (nascosto visivamente da JS e usato come bridge per inviare i messaggi)
@@ -3784,6 +3817,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         if user_input and not st.session_state.pending_agent_stream:
             st.session_state.canvas_chat_history.append({"role": "user", "content": user_input})
             st.session_state.pending_agent_stream = True
+            session_manager.auto_save_session()
             
             targeted_section, clean_instruction = extract_targeted_edit_request(user_input)
             if targeted_section:
@@ -4091,6 +4125,7 @@ else:
                 st.session_state.notion_status = f"💡 Appunti e trascrizioni della '{chosen_lesson.get('title')}' caricati con successo da Notion{vid_info}!"
                 st.toast(f"✅ Appunti e trascrizioni di '{chosen_lesson.get('title')}' caricati!", icon="📚")
                 st.session_state._should_scroll_to_results = True
+                session_manager.auto_save_session()
                 st.rerun()
 
         elif selected_lesson_label == NEW_LESSON_TAG and st.session_state.get("_active_loaded_lesson_id") is not None:
@@ -4107,6 +4142,7 @@ else:
             st.session_state._last_saved_notion_notes = None
             st.session_state.saved_vimeo_url = ""
             safe_set_session_state("vimeo_url_input", "")
+            session_manager.auto_save_session()
             st.rerun()
 
         # 3. Link video Vimeo
@@ -4678,3 +4714,7 @@ else:
                             st.download_button("💾 Scarica .txt", st.session_state.testo_estratto, f"trascrizione_{formatted_date_str.replace('/', '_')}.txt")
                         with c6:
                             st_copy_to_clipboard(st.session_state.testo_estratto, "📋 Copia Trascrizione")
+
+# Salvataggio persistente finale per catturare eventuali modifiche intervenute durante l'esecuzione
+session_manager.auto_save_session()
+
