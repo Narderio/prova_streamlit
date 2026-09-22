@@ -9,7 +9,6 @@ import streamlit as st
 
 CACHE_DIR = Path(__file__).resolve().parent / ".session_cache"
 SESSION_PARAM_KEY = "session"
-LAST_SESSION_FILE = CACHE_DIR / "last_session.txt"
 
 PERSIST_KEYS = [
     "notes_versions",
@@ -54,45 +53,8 @@ def _sanitize_session_id(session_id: str) -> str | None:
     return None
 
 
-def _get_last_active_session_id(max_age_days: int = 7) -> str | None:
-    """Individua l'ID dell'ultima sessione attiva con dati salvati entro max_age_days."""
-    if not CACHE_DIR.exists():
-        return None
-    cutoff = time.time() - (max_age_days * 86400)
-
-    # 1. Prova di lettura dal puntatore esplicito last_session.txt
-    if LAST_SESSION_FILE.exists():
-        try:
-            cand = LAST_SESSION_FILE.read_text(encoding="utf-8").strip()
-            cand = _sanitize_session_id(cand)
-            if cand:
-                cfile = CACHE_DIR / f"{cand}.json"
-                if cfile.exists() and cfile.stat().st_mtime >= cutoff:
-                    return cand
-        except Exception:
-            pass
-
-    # 2. Fallback: cerca il file .json più recentemente modificato nella cache
-    try:
-        json_files = [
-            f for f in CACHE_DIR.iterdir()
-            if f.is_file() and f.suffix == ".json"
-        ]
-        if json_files:
-            json_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-            newest = json_files[0]
-            if newest.stat().st_mtime >= cutoff:
-                cand = _sanitize_session_id(newest.stem)
-                if cand:
-                    return cand
-    except Exception:
-        pass
-
-    return None
-
-
 def get_current_session_id() -> str:
-    """Recupera o genera l'ID sessione. Se assente nell'URL, ricarica in automatico l'ultima sessione attiva."""
+    """Recupera l'ID sessione dai query parameters dell'URL o ne genera uno nuovo per la sessione corrente."""
     try:
         raw_param = st.query_params.get(SESSION_PARAM_KEY)
     except Exception:
@@ -100,19 +62,64 @@ def get_current_session_id() -> str:
 
     valid_id = _sanitize_session_id(raw_param)
     if not valid_id:
-        # Se non specificato nell'URL, ripristina automaticamente l'ultima sessione attiva recente (entro 7 giorni)
-        last_id = _get_last_active_session_id(max_age_days=7)
-        if last_id:
-            valid_id = last_id
-        else:
-            valid_id = uuid.uuid4().hex[:12]
-
+        valid_id = uuid.uuid4().hex[:12]
         try:
             st.query_params[SESSION_PARAM_KEY] = valid_id
         except Exception:
             pass
 
     return valid_id
+
+
+def inject_client_session_sync():
+    """Sincronizza l'ID sessione nel LocalStorage del browser del client in modo puramente multi-utente.
+    
+    - Se l'utente apre l'app all'indirizzo base (/), il suo browser legge il proprio LocalStorage e
+      reindirizza istantaneamente a ?session=<suo_id>.
+    - Se è un utente nuovo, genera un nuovo ID nel suo LocalStorage.
+    - Nessun file globale viene condiviso sul server: ogni utente è isolato.
+    """
+    current_param = ""
+    try:
+        current_param = st.query_params.get(SESSION_PARAM_KEY, "") or ""
+    except Exception:
+        current_param = ""
+
+    sync_js = f"""
+    <script>
+    (function() {{
+        try {{
+            const pDoc = window.parent.document;
+            const pWin = pDoc.defaultView || window.parent;
+            const storageKey = 'appunti_user_session_id';
+            const currentParam = '{current_param}';
+            
+            const searchParams = new URLSearchParams(pWin.location.search);
+            const urlSession = searchParams.get('session');
+
+            if (!urlSession) {{
+                // L'utente ha aperto l'URL base senza parametri: cerca nel proprio LocalStorage client
+                let clientSavedId = pWin.localStorage.getItem(storageKey);
+                if (!clientSavedId || !/^[a-zA-Z0-9_\\-]{{6,64}}$/.test(clientSavedId)) {{
+                    clientSavedId = currentParam || (Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 6));
+                    pWin.localStorage.setItem(storageKey, clientSavedId);
+                }}
+                searchParams.set('session', clientSavedId);
+                const newUrl = pWin.location.pathname + '?' + searchParams.toString() + pWin.location.hash;
+                pWin.location.replace(newUrl);
+            }} else {{
+                // L'URL ha già il parametro: memorizzalo nel LocalStorage di questo client
+                if (urlSession && /^[a-zA-Z0-9_\\-]{{6,64}}$/.test(urlSession)) {{
+                    pWin.localStorage.setItem(storageKey, urlSession);
+                }}
+            }}
+        }} catch(e) {{
+            console.warn("Storage session sync warning:", e);
+        }}
+    }})();
+    </script>
+    """
+    st.iframe(sync_js, height=1)
 
 
 def _get_cache_file(session_id: str) -> Path:
@@ -163,13 +170,6 @@ def auto_save_session():
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp_file, cache_file)
-
-        # Aggiorna il puntatore all'ultima sessione attiva se ci sono dati utili
-        if has_meaningful_data:
-            try:
-                LAST_SESSION_FILE.write_text(session_id, encoding="utf-8")
-            except Exception:
-                pass
     except Exception:
         if tmp_file.exists():
             try:
@@ -247,15 +247,6 @@ def reset_session():
                 cache_file.unlink()
             except Exception:
                 pass
-
-    # Se l'ultima sessione puntava a questa, rimuove il puntatore
-    if LAST_SESSION_FILE.exists():
-        try:
-            curr_ptr = LAST_SESSION_FILE.read_text(encoding="utf-8").strip()
-            if curr_ptr == session_id:
-                LAST_SESSION_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
 
     # Reset delle chiavi di sessione
     for k in PERSIST_KEYS:

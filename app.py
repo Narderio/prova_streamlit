@@ -237,6 +237,9 @@ def parse_date_safely(date_val, title_val=""):
 # --- INIZIO INTERFACCIA STREAMLIT ---
 st.set_page_config(page_title="Appunti Universitari", page_icon="🎓", layout="wide")
 
+# Sincronizzazione isolata della sessione nel LocalStorage del browser del client (Multi-Utente)
+session_manager.inject_client_session_sync()
+
 # --- SIDEBAR CONFIGURAZIONE ---
 st.sidebar.title("⚙️ Configurazione")
 
