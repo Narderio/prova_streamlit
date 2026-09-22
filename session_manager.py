@@ -44,7 +44,7 @@ DATE_KEYS = [
 ]
 
 
-def _sanitize_session_id(session_id: str) -> str | None:
+def _sanitize_session_id(session_id: str | None) -> str | None:
     if not session_id or not isinstance(session_id, str):
         return None
     session_id = session_id.strip()
@@ -54,67 +54,97 @@ def _sanitize_session_id(session_id: str) -> str | None:
 
 
 def get_current_session_id() -> str:
-    """Recupera l'ID sessione dai query parameters dell'URL o ne genera uno nuovo per la sessione corrente."""
+    """Recupera l'ID sessione prioritariamente da:
+    1. Query param dell'URL (?session=...)
+    2. Cookie HTTP nativo del browser (appunti_session_id inviato con la richiesta HTTP)
+    3. Nuovo UUID generato se prima visita assoluta.
+    """
+    # 1. Controllo query parameters
     try:
         raw_param = st.query_params.get(SESSION_PARAM_KEY)
     except Exception:
         raw_param = None
 
     valid_id = _sanitize_session_id(raw_param)
-    if not valid_id:
+    if valid_id:
+        return valid_id
+
+    # 2. Controllo Cookie HTTP nativo del client (st.context.cookies)
+    cookie_id = None
+    try:
+        if hasattr(st, "context") and hasattr(st.context, "cookies"):
+            raw_cookie = st.context.cookies.get("appunti_session_id")
+            cookie_id = _sanitize_session_id(raw_cookie)
+    except Exception:
+        cookie_id = None
+
+    if cookie_id:
+        valid_id = cookie_id
+    else:
+        # 3. Generazione nuovo ID per nuovo visitatore
         valid_id = uuid.uuid4().hex[:12]
-        try:
-            st.query_params[SESSION_PARAM_KEY] = valid_id
-        except Exception:
-            pass
+
+    try:
+        st.query_params[SESSION_PARAM_KEY] = valid_id
+    except Exception:
+        pass
 
     return valid_id
 
 
 def inject_client_session_sync():
-    """Sincronizza l'ID sessione nel LocalStorage del browser del client in modo puramente multi-utente.
+    """Sincronizza l'ID sessione come Cookie HTTP e LocalStorage nel browser del client (Multi-Utente).
     
-    - Se l'utente apre l'app all'indirizzo base (/), il suo browser legge il proprio LocalStorage e
-      reindirizza istantaneamente a ?session=<suo_id>.
-    - Se è un utente nuovo, genera un nuovo ID nel suo LocalStorage.
-    - Nessun file globale viene condiviso sul server: ogni utente è isolato.
+    Imposta il cookie con validità 7 giorni (604800s) sia su document che su window.parent.document.
+    In questo modo, a ogni riapertura del browser, il client invia il cookie nativamente prima
+    dell'esecuzione dello script Python sul server.
     """
-    current_param = ""
-    try:
-        current_param = st.query_params.get(SESSION_PARAM_KEY, "") or ""
-    except Exception:
-        current_param = ""
+    session_id = get_current_session_id()
+    if not session_id:
+        return
 
     sync_js = f"""
     <script>
     (function() {{
         try {{
-            const pDoc = window.parent.document;
-            const pWin = pDoc.defaultView || window.parent;
-            const storageKey = 'appunti_user_session_id';
-            const currentParam = '{current_param}';
-            
-            const searchParams = new URLSearchParams(pWin.location.search);
-            const urlSession = searchParams.get('session');
+            const currentSessionId = '{session_id}';
+            const maxAge = 7 * 24 * 60 * 60; // 7 giorni
+            const pWin = window.parent || window;
+            const pDoc = (window.parent && window.parent.document) || document;
 
-            if (!urlSession) {{
-                // L'utente ha aperto l'URL base senza parametri: cerca nel proprio LocalStorage client
-                let clientSavedId = pWin.localStorage.getItem(storageKey);
-                if (!clientSavedId || !/^[a-zA-Z0-9_\\-]{{6,64}}$/.test(clientSavedId)) {{
-                    clientSavedId = currentParam || (Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 6));
-                    pWin.localStorage.setItem(storageKey, clientSavedId);
-                }}
-                searchParams.set('session', clientSavedId);
-                const newUrl = pWin.location.pathname + '?' + searchParams.toString() + pWin.location.hash;
-                pWin.location.replace(newUrl);
-            }} else {{
-                // L'URL ha già il parametro: memorizzalo nel LocalStorage di questo client
-                if (urlSession && /^[a-zA-Z0-9_\\-]{{6,64}}$/.test(urlSession)) {{
-                    pWin.localStorage.setItem(storageKey, urlSession);
-                }}
+            // 1. Controllo cookie esistente
+            const cookieMatch = (pDoc.cookie || document.cookie || '').match(/appunti_session_id=([a-zA-Z0-9_\\-]+)/);
+            const existingCookieId = cookieMatch ? cookieMatch[1] : null;
+
+            // 2. Se nessun cookie è presente, verifica se esiste un ID memorizzato in localStorage
+            if (!existingCookieId) {{
+                try {{
+                    const legacyStorageId = pWin.localStorage.getItem('appunti_user_session_id');
+                    if (legacyStorageId && /^[a-zA-Z0-9_\\-]{{6,64}}$/.test(legacyStorageId) && legacyStorageId !== currentSessionId) {{
+                        // Ripristina l'ID precedente dal browser
+                        const restoreCookie = 'appunti_session_id=' + legacyStorageId + '; path=/; max-age=' + maxAge + '; SameSite=Lax';
+                        document.cookie = restoreCookie;
+                        try {{ pDoc.cookie = restoreCookie; }} catch(e) {{}}
+                        
+                        const searchParams = new URLSearchParams(pWin.location.search);
+                        if (searchParams.get('session') !== legacyStorageId) {{
+                            searchParams.set('session', legacyStorageId);
+                            pWin.location.replace(pWin.location.pathname + '?' + searchParams.toString() + pWin.location.hash);
+                            return;
+                        }}
+                    }}
+                }} catch(e) {{}}
+            }}
+
+            // 3. Imposta / rinnova il cookie di 7 giorni per la sessione corrente
+            if (currentSessionId && /^[a-zA-Z0-9_\\-]{{6,64}}$/.test(currentSessionId)) {{
+                const cookieStr = 'appunti_session_id=' + currentSessionId + '; path=/; max-age=' + maxAge + '; SameSite=Lax';
+                document.cookie = cookieStr;
+                try {{ pDoc.cookie = cookieStr; }} catch(e) {{}}
+                try {{ pWin.localStorage.setItem('appunti_user_session_id', currentSessionId); }} catch(e) {{}}
             }}
         }} catch(e) {{
-            console.warn("Storage session sync warning:", e);
+            console.warn("Cookie session sync warning:", e);
         }}
     }})();
     </script>
@@ -179,7 +209,7 @@ def auto_save_session():
 
 
 def restore_session_if_available() -> bool:
-    """Ripristina lo stato salvato se disponibile per l'ID sessione presente nell'URL."""
+    """Ripristina lo stato salvato se disponibile per l'ID sessione presente nell'URL o Cookie."""
     if st.session_state.get("_session_restored", False):
         return False
 
