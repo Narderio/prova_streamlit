@@ -151,24 +151,31 @@ def sanitize_mermaid_diagrams(text: str) -> str:
     def fix_block(match):
         code = match.group(1)
         
-        # 1. Nodi rettangolari: id[Testo con (parentesi) o simboli] -> id["Testo con (parentesi) o simboli"]
+        # 1. Nodi rettangolari: id[Testo con & / : o parentesi non quotate] -> id["Testo"]
         # Esclude forme composte come [((...))] o [(...)] o ([...])
         code = re.sub(
-            r'([\w\-\.]+)\s*\[(?![\[\(\/\\])\s*([^"\[\]\r\n]*?[()\{\}][^"\[\]\r\n]*?)\s*\]',
+            r'([\w\-\.]+)\s*\[(?![\[\(\/\\])\s*([^"\[\]\r\n]*?[&/:()\{\}<>%@#+*][^"\[\]\r\n]*?)\s*\]',
             r'\1["\2"]',
             code
         )
         
-        # 2. Nodi a rombo: id{Testo con (parentesi) o [quadre]} -> id{"..."}
+        # 2. Nodi a rombo: id{Testo con caratteri speciali} -> id{"..."}
         code = re.sub(
-            r'([\w\-\.]+)\s*\{(?![{\(\/\\])\s*([^"\{\}\r\n]*?[()\[\]][^"\{\}\r\n]*?)\s*\}',
+            r'([\w\-\.]+)\s*\{(?![{\(\/\\])\s*([^"\{\}\r\n]*?[&/:()\[\]<>%@#+*][^"\{\}\r\n]*?)\s*\}',
             r'\1{"\2"}',
             code
         )
 
-        # 3. Frecce con etichette tipo A -->|etichetta (con parentesi)| B
+        # 3. Nodi arrotondati: id(Testo con :) -> id("Testo")
         code = re.sub(
-            r'(-->|---|==>|-\.->)\s*\|([^"\|\r\n]*?[()\[\]\{\}][^"\|\r\n]*?)\|\s*',
+            r'([\w\-\.]+)\s*\((?![\[\(\/\\])\s*([^"\(\)\r\n]*?[&/:\[\]\{\}<>%@#+*][^"\(\)\r\n]*?)\s*\)',
+            r'\1("\2")',
+            code
+        )
+
+        # 4. Frecce con etichette tipo A -->|etichetta| B
+        code = re.sub(
+            r'(-->|---|==>|-\.->)\s*\|([^"\|\r\n]*?[&/:()\[\]\{\}<>%@#+*][^"\|\r\n]*?)\|\s*',
             r'\1|"\2"| ',
             code
         )
@@ -696,12 +703,16 @@ def get_or_create_course_database(course_page_id, course_name="Corso", api_key=N
 
     clean_id = format_notion_id(course_page_id)
 
-    # 1. Cerca se dentro la pagina del corso c'è già un child_database inline
+    # 1. Cerca se dentro la pagina del corso c'è già un child_database inline per le lezioni
     try:
         blocks = client.blocks.children.list(block_id=clean_id)
         for block in blocks.get("results", []):
             if block.get("type") == "child_database":
                 db_id = block.get("id")
+                title = block.get("child_database", {}).get("title", "").lower()
+                # Non considerare il database degli argomenti come database delle lezioni
+                if "argomenti" in title or "compendio" in title or "studio" in title:
+                    continue
                 get_database_schema_props(client, db_id)
                 return db_id, None
     except Exception as e:
@@ -748,6 +759,7 @@ def get_course_lessons(course_page_id, course_name="Corso", api_key=None) -> lis
             "title": title_str,
             "date": date_iso,
             "has_notes": bool,
+            "topics": topics_str,
             "url": url_str,
             "created_time": created_time
         }, ...
@@ -763,7 +775,7 @@ def get_course_lessons(course_page_id, course_name="Corso", api_key=None) -> lis
         return []
 
     clean_db_id = format_notion_id(db_id)
-    title_prop, checkbox_prop, date_prop, _ = get_database_schema_props(client, clean_db_id)
+    title_prop, checkbox_prop, date_prop, topics_prop = get_database_schema_props(client, clean_db_id)
 
     try:
         query_res = query_notion_database(client, clean_db_id)
@@ -794,6 +806,13 @@ def get_course_lessons(course_page_id, course_name="Corso", api_key=None) -> lis
             # Checkbox Appunti
             has_notes = props.get(checkbox_prop, {}).get("checkbox", False) if checkbox_prop else False
             
+            # Argomenti trattati (estrae testo per suggerimenti a costo zero)
+            topics_str = ""
+            if topics_prop and topics_prop in props:
+                r_list = props[topics_prop].get("rich_text", [])
+                if r_list:
+                    topics_str = "".join(t.get("plain_text", "") for t in r_list).strip()
+
             clean_pid = format_notion_id(pid).replace("-", "")
             notion_url = f"https://www.notion.so/{clean_pid}"
 
@@ -802,6 +821,7 @@ def get_course_lessons(course_page_id, course_name="Corso", api_key=None) -> lis
                 "title": title_str,
                 "date": date_iso,
                 "has_notes": has_notes,
+                "topics": topics_str,
                 "url": notion_url,
                 "created_time": page.get("created_time", "")
             })
@@ -816,6 +836,360 @@ def get_course_lessons(course_page_id, course_name="Corso", api_key=None) -> lis
     except Exception as e:
         print(f"Errore recupero lezioni del corso {course_name} da Notion: {e}")
         return []
+
+def get_topics_database_schema_props(client: Client, database_id: str):
+    """
+    Ispeziona ed allinea lo schema del Database Argomenti Notion garantendo la presenza delle colonne:
+    - Title (Argomento o Name, rinominata ad Argomento se possibile)
+    - Stato Studio (Select: 🟡 Da Studiare, 🔵 In Ripasso, 🟢 Padroneggiato)
+    - Ultimo Aggiornamento (Date)
+    - Punti Chiave (Rich Text)
+    Restituisce un dizionario con i metadati di allineamento dello schema.
+    """
+    target_id, is_data_source = get_target_data_source_id(client, database_id)
+    title_prop_name = None
+    status_prop_name = None
+    date_prop_name = None
+    key_points_prop_name = None
+    lessons_prop_name = None
+
+    EXPECTED_TOPIC_COLUMNS = {
+        "Stato Studio": {
+            "select": {
+                "options": [
+                    {"name": "🟡 Da Studiare", "color": "yellow"},
+                    {"name": "🔵 In Ripasso", "color": "blue"},
+                    {"name": "🟢 Padroneggiato", "color": "green"}
+                ]
+            }
+        },
+        "Ultimo Aggiornamento": {"date": {}},
+        "Punti Chiave": {"rich_text": {}}
+    }
+
+    try:
+        if is_data_source and hasattr(client, "data_sources"):
+            ds_info = client.data_sources.retrieve(data_source_id=target_id)
+            props = ds_info.get("properties", {})
+        else:
+            db_info = client.databases.retrieve(database_id=target_id)
+            props = db_info.get("properties", {})
+
+        existing_names_lower = {}
+        for p_name, p_val in props.items():
+            p_type = p_val.get("type")
+            p_name_lower = p_name.lower().strip()
+            existing_names_lower[p_name_lower] = p_name
+            if p_type == "title":
+                title_prop_name = p_name
+            elif p_type == "select" and ("stato" in p_name_lower or "status" in p_name_lower):
+                status_prop_name = p_name
+            elif p_type == "date" and ("aggiorn" in p_name_lower or "data" in p_name_lower or "date" in p_name_lower):
+                date_prop_name = p_name
+            elif p_type == "rich_text" and ("punti" in p_name_lower or "chiave" in p_name_lower or "key" in p_name_lower):
+                key_points_prop_name = p_name
+            elif "lezion" in p_name_lower:
+                lessons_prop_name = p_name
+
+        update_payload = {}
+        if title_prop_name and title_prop_name.lower() == "name":
+            update_payload[title_prop_name] = {"name": "Argomento"}
+
+        for col_name, col_schema in EXPECTED_TOPIC_COLUMNS.items():
+            if col_name.lower().strip() not in existing_names_lower:
+                update_payload[col_name] = col_schema
+
+        if update_payload:
+            try:
+                if is_data_source and hasattr(client, "data_sources"):
+                    upd_res = client.data_sources.update(data_source_id=target_id, properties=update_payload)
+                else:
+                    upd_res = client.databases.update(database_id=target_id, properties=update_payload)
+
+                new_props = upd_res.get("properties", {}) if isinstance(upd_res, dict) else {}
+                for p_name, p_val in new_props.items():
+                    p_type = p_val.get("type")
+                    p_name_lower = p_name.lower().strip()
+                    if p_type == "title":
+                        title_prop_name = p_name
+                    elif p_type == "select" and ("stato" in p_name_lower or "status" in p_name_lower):
+                        status_prop_name = p_name
+                    elif p_type == "date":
+                        date_prop_name = p_name
+                    elif p_type == "rich_text" and "punti" in p_name_lower:
+                        key_points_prop_name = p_name
+            except Exception as e_upd:
+                print(f"Tentativo inserimento colonne topic una ad una ({e_upd})...")
+                for col_k, col_v in update_payload.items():
+                    try:
+                        if is_data_source and hasattr(client, "data_sources"):
+                            client.data_sources.update(data_source_id=target_id, properties={col_k: col_v})
+                        else:
+                            client.databases.update(database_id=target_id, properties={col_k: col_v})
+                    except Exception as e_single:
+                        print(f"Avviso creazione colonna topic '{col_k}': {e_single}")
+
+    except Exception as e:
+        print(f"Avviso lettura schema topic Notion: {e}")
+
+    if not title_prop_name:
+        title_prop_name = "Argomento"
+    if not status_prop_name:
+        status_prop_name = "Stato Studio"
+    if not date_prop_name:
+        date_prop_name = "Ultimo Aggiornamento"
+    if not key_points_prop_name:
+        key_points_prop_name = "Punti Chiave"
+
+    return {
+        "title": title_prop_name,
+        "status": status_prop_name,
+        "date": date_prop_name,
+        "key_points": key_points_prop_name,
+        "lessons": lessons_prop_name,
+        "is_data_source": is_data_source,
+        "target_id": target_id
+    }
+
+def get_or_create_topics_database(course_page_id, course_name="Corso", api_key=None):
+    """
+    Cerca o crea il Database degli Argomenti / Compendio Tematico nella pagina del corso.
+    Se esiste già una tabella con 'Argomenti' nel titolo, la restituisce e allinea lo schema.
+    Altrimenti crea una tabella inline e allinea lo schema.
+    """
+    client = get_notion_client(api_key)
+    if not client or not course_page_id:
+        return None, "Client Notion non configurato o Page ID del corso mancante."
+
+    clean_id = format_notion_id(course_page_id)
+
+    # 1. Cerca se dentro la pagina del corso c'è già la tabella degli Argomenti
+    try:
+        blocks = client.blocks.children.list(block_id=clean_id)
+        for block in blocks.get("results", []):
+            if block.get("type") == "child_database":
+                title = block.get("child_database", {}).get("title", "").lower()
+                if "argomenti" in title or "compendio" in title or "studio" in title:
+                    db_id = block.get("id")
+                    get_topics_database_schema_props(client, db_id)
+                    return db_id, None
+    except Exception as e:
+        print(f"Avviso scansione blocchi argomenti corso: {e}")
+
+    # 2. Crea la tabella inline
+    try:
+        new_db = client.databases.create(
+            parent={"type": "page_id", "page_id": clean_id},
+            is_inline=True,
+            title=[{"type": "text", "text": {"content": f"Argomenti {course_name}"}}]
+        )
+        db_id = new_db.get("id")
+        get_topics_database_schema_props(client, db_id)
+        return db_id, None
+    except Exception as e:
+        return None, f"Errore creazione tabella argomenti: {e}"
+
+def get_course_topics(course_page_id, course_name="Corso", api_key=None) -> list:
+    """
+    Recupera l'elenco degli argomenti salvati nella tabella 'Argomenti {course_name}' su Notion.
+    Restituisce una lista di dizionari:
+    [
+        {
+            "id": page_id,
+            "title": topic_title,
+            "status": status_str,
+            "updated_at": date_str,
+            "key_points": key_points_str,
+            "lessons_related": [id1, id2, ...],
+            "url": url_str,
+            "created_time": created_time
+        }, ...
+    ]
+    """
+    client = get_notion_client(api_key)
+    if not client or not course_page_id:
+        return []
+
+    db_id, err = get_or_create_topics_database(course_page_id, course_name, api_key)
+    if not db_id or err:
+        return []
+
+    clean_db_id = format_notion_id(db_id)
+
+    try:
+        query_res = query_notion_database(client, clean_db_id)
+        results = query_res.get("results", []) if isinstance(query_res, dict) else []
+
+        topics = []
+        for page in results:
+            pid = page.get("id")
+            props = page.get("properties", {})
+
+            # Titolo
+            title_str = ""
+            for prop_name, prop_val in props.items():
+                if prop_val.get("type") == "title":
+                    t_list = prop_val.get("title", [])
+                    if t_list:
+                        title_str = "".join(t.get("plain_text", "") for t in t_list).strip()
+                    break
+            if not title_str:
+                title_str = f"Argomento ({pid[:6]})"
+
+            # Stato Studio
+            status_str = "🟡 Da Studiare"
+            for prop_name, prop_val in props.items():
+                if prop_val.get("type") == "select" and "stato" in prop_name.lower():
+                    sel = prop_val.get("select")
+                    if sel and sel.get("name"):
+                        status_str = sel.get("name")
+                    break
+
+            # Data Aggiornamento
+            updated_at = ""
+            for prop_name, prop_val in props.items():
+                if prop_val.get("type") == "date":
+                    d_info = prop_val.get("date")
+                    if d_info and d_info.get("start"):
+                        updated_at = d_info.get("start")
+                    break
+            if not updated_at:
+                created_time = page.get("created_time", "")
+                updated_at = created_time[:10] if created_time else datetime.date.today().isoformat()
+
+            # Punti Chiave
+            key_points = ""
+            for prop_name, prop_val in props.items():
+                if prop_val.get("type") == "rich_text" and "punti" in prop_name.lower():
+                    r_text = prop_val.get("rich_text", [])
+                    if r_text:
+                        key_points = "".join(t.get("plain_text", "") for t in r_text).strip()
+                    break
+
+            # Lezioni Correlate
+            lessons_rel = []
+            for prop_name, prop_val in props.items():
+                if prop_val.get("type") == "relation":
+                    rel_list = prop_val.get("relation", [])
+                    lessons_rel = [r.get("id") for r in rel_list if r.get("id")]
+                    break
+                elif prop_val.get("type") == "rich_text" and "lezion" in prop_name.lower():
+                    r_text = prop_val.get("rich_text", [])
+                    if r_text:
+                        lessons_rel = [t.get("plain_text", "").strip() for t in r_text if t.get("plain_text", "").strip()]
+                    break
+
+            clean_pid = format_notion_id(pid).replace("-", "")
+            topics.append({
+                "id": pid,
+                "title": title_str,
+                "status": status_str,
+                "updated_at": updated_at,
+                "key_points": key_points,
+                "lessons_related": lessons_rel,
+                "url": f"https://www.notion.so/{clean_pid}",
+                "created_time": page.get("created_time", "")
+            })
+
+        topics.sort(key=lambda x: (x.get("updated_at") or "", x.get("created_time") or ""), reverse=True)
+        return topics
+    except Exception as e:
+        print(f"Errore recupero argomenti del corso {course_name} da Notion: {e}")
+        return []
+
+def save_topic_to_notion(course_name, course_page_id, topic_title, markdown_text, lesson_page_ids=None, topic_page_id=None, api_key=None, status="🟡 Da Studiare", key_points=""):
+    """
+    Crea o aggiorna un argomento nella tabella 'Argomenti {course_name}' su Notion.
+    Scrive il capitolo markdown formattato come blocchi nativi Notion.
+    Ritorna (success_bool, message_str, page_id)
+    """
+    client = get_notion_client(api_key)
+    if not client:
+        return False, "Client Notion non configurato.", None
+
+    db_id, err = get_or_create_topics_database(course_page_id, course_name, api_key)
+    if not db_id or err:
+        return False, f"Impossibile accedere alla tabella Argomenti: {err}", None
+
+    clean_db_id = format_notion_id(db_id)
+    today_iso = datetime.date.today().isoformat()
+    clean_lesson_ids = [format_notion_id(lid) for lid in (lesson_page_ids or []) if lid]
+
+    # Allinea lo schema e recupera i nomi esatti delle colonne
+    schema_info = get_topics_database_schema_props(client, clean_db_id)
+    title_col = schema_info["title"]
+    status_col = schema_info["status"]
+    date_col = schema_info["date"]
+    kp_col = schema_info["key_points"]
+    lessons_col = schema_info["lessons"]
+
+    props = {
+        title_col: {"title": [{"type": "text", "text": {"content": topic_title[:100]}}]}
+    }
+    if date_col:
+        props[date_col] = {"date": {"start": today_iso}}
+    if status_col:
+        props[status_col] = {"select": {"name": status}}
+    if key_points and kp_col:
+        props[kp_col] = {"rich_text": [{"type": "text", "text": {"content": key_points[:2000]}}]}
+
+    if lessons_col:
+        try:
+            target_id, is_ds = get_target_data_source_id(client, clean_db_id)
+            if is_ds and hasattr(client, "data_sources"):
+                s_info = client.data_sources.retrieve(data_source_id=target_id)
+                db_props = s_info.get("properties", {})
+            else:
+                d_info = client.databases.retrieve(database_id=target_id)
+                db_props = d_info.get("properties", {})
+            
+            l_type = db_props.get(lessons_col, {}).get("type")
+            if l_type == "relation" and clean_lesson_ids:
+                props[lessons_col] = {"relation": [{"id": lid} for lid in clean_lesson_ids]}
+            elif l_type == "rich_text" and clean_lesson_ids:
+                props[lessons_col] = {"rich_text": [{"type": "text", "text": {"content": ", ".join(clean_lesson_ids)}}]}
+        except Exception:
+            pass
+
+    target_page_id = topic_page_id
+    is_update = bool(target_page_id)
+
+    # Se non fornito topic_page_id, cerca se esiste già una riga con questo titolo
+    if not target_page_id:
+        try:
+            filter_dict = {
+                "property": title_col,
+                "title": {"equals": topic_title}
+            }
+            existing = query_notion_database(client, clean_db_id, filter_dict=filter_dict)
+            res = existing.get("results", []) if isinstance(existing, dict) else []
+            if res:
+                target_page_id = res[0].get("id")
+                is_update = True
+        except Exception as e:
+            print(f"Avviso ricerca argomento esistente: {e}")
+
+    try:
+        if is_update and target_page_id:
+            clean_target_id = format_notion_id(target_page_id)
+            client.pages.update(page_id=clean_target_id, properties=props)
+            ok, err_o = overwrite_notion_page(clean_target_id, markdown_text, api_key=api_key)
+            if not ok:
+                return False, f"Errore scrittura blocchi: {err_o}", clean_target_id
+            return True, "Capitolo argomento aggiornato con successo su Notion!", clean_target_id
+        else:
+            new_page = client.pages.create(
+                parent={"database_id": clean_db_id},
+                properties=props
+            )
+            new_id = new_page.get("id")
+            blocks = markdown_to_notion_blocks(markdown_text)
+            ok, err_a = append_notes_to_page(new_id, blocks, is_append=False, api_key=api_key)
+            if not ok:
+                return False, f"Errore scrittura blocchi: {err_a}", new_id
+            return True, "Nuovo capitolo argomento creato con successo su Notion!", new_id
+    except Exception as e:
+        return False, f"Errore salvataggio argomento su Notion: {e}", None
 
 def find_original_version_page(results, title_prop):
     """

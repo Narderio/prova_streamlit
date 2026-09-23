@@ -16,6 +16,8 @@ import gemini_rate_tracker
 import presentation_helper
 import image_positioning_helper
 import session_manager
+import studio_helper
+import studio_page
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # Ricarica dinamica moduli per garantire che le modifiche al codice backend siano sempre applicate
@@ -25,6 +27,8 @@ importlib.reload(supabase_client)
 importlib.reload(presentation_helper)
 importlib.reload(image_positioning_helper)
 importlib.reload(session_manager)
+importlib.reload(studio_helper)
+importlib.reload(studio_page)
 
 
 from backend import (
@@ -240,7 +244,21 @@ st.set_page_config(page_title="Appunti Universitari", page_icon="🎓", layout="
 # Sincronizzazione isolata della sessione nel LocalStorage del browser del client (Multi-Utente)
 session_manager.inject_client_session_sync()
 
-# --- SIDEBAR CONFIGURAZIONE ---
+# --- SIDEBAR CONFIGURAZIONE E NAVIGAZIONE ---
+st.sidebar.title("🧭 Navigazione")
+app_pages = ["📝 Appunti (Lezioni)", "🎓 Studio (Compendio)"]
+curr_p = st.session_state.get("current_app_page", "appunti")
+p_idx = 0 if curr_p == "appunti" else 1
+
+selected_page_nav = st.sidebar.radio(
+    "Modalità di lavoro:",
+    app_pages,
+    index=p_idx,
+    key="nav_main_mode_radio"
+)
+st.session_state.current_app_page = "studio" if "Studio" in selected_page_nav else "appunti"
+st.sidebar.divider()
+
 st.sidebar.title("⚙️ Configurazione")
 
 # 1. Google API Key (isolata per singola sessione utente, senza inquinare os.environ globale)
@@ -3946,6 +3964,23 @@ else:
             
         dots = "".join(["🔵 " if i == st.session_state.feature_index else "⚪ " for i in range(len(features))])
         st.caption(f"Slide {st.session_state.feature_index + 1} di {len(features)} &nbsp; {dots}")
+
+    notion_token = os.getenv("NOTION_API_KEY") or (st.secrets.get("NOTION_API_KEY") if hasattr(st, "secrets") else None)
+    notion_corsi_id = os.getenv("NOTION_CORSI_PAGE_ID") or (st.secrets.get("NOTION_CORSI_PAGE_ID") if hasattr(st, "secrets") else None)
+
+    # Routing Pagina: se attiva la modalità Studio, renderizza la vista Studio e termina
+    if st.session_state.get("current_app_page") == "studio":
+        studio_courses = cached_get_available_courses(notion_corsi_id, notion_token)
+        studio_page.render_studio_page(
+            notion_corsi_id=notion_corsi_id,
+            notion_token=notion_token,
+            google_api_key=get_active_google_api_key(),
+            active_model=MODEL_NOTES,
+            courses_dict=studio_courses,
+            cached_get_course_lessons_func=cached_get_course_lessons,
+            cached_get_notion_page_markdown_func=cached_get_notion_page_markdown
+        )
+        st.stop()
 
     col_title_main, col_btn_news = st.columns([4, 1])
     with col_title_main:
