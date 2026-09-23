@@ -655,7 +655,8 @@ def get_database_schema_props(client: Client, database_id: str):
 
 def get_available_courses(corsi_page_id=None, api_key=None):
     """
-    Legge le sottopagine e i database presenti dentro la pagina radice 'Corsi' su Notion.
+    Legge le sottopagine e i database presenti dentro la pagina radice 'Corsi' su Notion,
+    oppure le righe se l'ID corrisponde direttamente a un Database di Corsi.
     Restituisce un dizionario {nome_corso: page_id}.
     """
     client = get_notion_client(api_key)
@@ -666,23 +667,57 @@ def get_available_courses(corsi_page_id=None, api_key=None):
 
     clean_page_id = format_notion_id(page_id)
 
+    # 1. Se l'ID corrisponde a un Database Notion, leggiamo ciascuna riga (materia)
+    try:
+        db_info = client.databases.retrieve(database_id=clean_page_id)
+        if db_info and db_info.get("object") == "database":
+            query_res = query_notion_database(client, clean_page_id)
+            courses = {}
+            for row in query_res.get("results", []):
+                pid = row.get("id")
+                props = row.get("properties", {})
+                title = ""
+                # Cerca prima la proprietà di tipo title (in Notion ogni DB ne ha una)
+                for prop_val in props.values():
+                    if prop_val.get("type") == "title":
+                        t_list = prop_val.get("title", [])
+                        title = "".join([t.get("plain_text", "") for t in t_list]).strip()
+                        break
+                # Se vuoto, cerca in campi di testo alternativi
+                if not title:
+                    for k in ["Corso", "Materia", "Nome"]:
+                        if k in props and props[k].get("type") == "rich_text":
+                            t_list = props[k].get("rich_text", [])
+                            title = "".join([t.get("plain_text", "") for t in t_list]).strip()
+                            if title:
+                                break
+                if title and title not in ["", "1", "hhh"]:
+                    courses[title] = pid
+            if courses:
+                return courses
+    except Exception as e:
+        # Non è un database o retrieve non riuscito, proseguiamo con lettura blocchi pagina
+        pass
+
+    # 2. Se l'ID corrisponde a una Pagina Notion, cerchiamo child_page o child_database
     try:
         response = client.blocks.children.list(block_id=clean_page_id)
         courses = {}
         for block in response.get("results", []):
             block_type = block.get("type")
             if block_type == "child_page":
-                title = block.get("child_page", {}).get("title", "")
+                title = block.get("child_page", {}).get("title", "").strip()
                 if title:
                     courses[title] = block.get("id")
             elif block_type == "child_database":
-                title = block.get("child_database", {}).get("title", "")
+                title = block.get("child_database", {}).get("title", "").strip()
                 if title:
                     courses[title] = block.get("id")
         return courses
     except Exception as e:
         print(f"Errore durante il recupero dei corsi da Notion: {e}")
         return {}
+
 
 def get_or_create_course_database(course_page_id, course_name="Corso", api_key=None):
     """
