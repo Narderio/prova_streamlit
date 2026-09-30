@@ -40,13 +40,13 @@ Se il professore fa recap di lezioni precedenti:
 - NON includerli
 - a meno che introducano nuovi concetti utili alla comprensione.
 
-Organizza gli appunti usando:
+Organizza gli appunti in modo discorsivo usando:
 - titoli
 - sottotitoli
-- elenchi puntati
-- paragrafi
+- ampi paragrafi di testo discorsivo per le spiegazioni (prediligi questa forma)
 - blocchi codice
 - formule
+- elenchi puntati (LIMITANE FORTEMENTE L'USO: usali SOLO se strettamente necessario per vere e proprie liste di elementi, e mai per spiegare interi argomenti o concetti)
 
 L'output deve essere SOLO in formato Markdown.
 
@@ -67,7 +67,7 @@ Se ci sono diagrammi o schemi Mermaid (```mermaid ... ```):
 Se ci sono codice o comandi:
 - usa blocchi markdown con il linguaggio corretto.
 
-Mantieni uno stile discorsivo e adatto allo studio universitario."""
+Mantieni uno stile testuale, discorsivo e narrativo (come un libro di testo universitario). Evita l'eccessiva schematizzazione e gli appunti troppo telegrafici."""
 
 LATEX_PROMPT = r"""Riceverai in input degli appunti universitari scritti in formato Markdown.
 Il tuo compito è convertirli in codice LaTeX ben formattato, mantenendo il contenuto originale il più fedele possibile.
