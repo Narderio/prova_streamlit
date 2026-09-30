@@ -24,6 +24,7 @@ Regole fondamentali:
 - NON scrivere introduzioni o conclusioni.
 - NON scrivere commenti personali.
 - NON scrivere frasi come "ecco gli appunti sistemati".
+- Scrivi gli appunti nella STESSA LINGUA della trascrizione (se la lezione è in inglese, gli appunti devono essere in inglese; se è in italiano, in italiano).
 
 Mantieni:
 - spiegazioni
@@ -78,6 +79,7 @@ Regole fondamentali:
 - NON aggiungere contenuti inventati.
 - NON modificare il significato delle spiegazioni.
 - Mantieni tutte le formule, esempi, osservazioni e passaggi logici.
+- Scrivi il codice LaTeX mantenendo la STESSA LINGUA degli appunti originali.
 
 Regole di formattazione LaTeX:
 - Usa uno stile pulito e leggibile.

@@ -41,7 +41,10 @@ REGOLE TASSATIVE DI COMPOSIZIONE:
    - "formula_focus": Slide dedicata a una legge o equazione fondamentale ("formula", "formula_explanation", "bullets").
    - "summary": Slide di recap finale con i punti essenziali da ricordare (inserisci i punti in "bullets").
 
-5. FORMATO DI OUTPUT E REGOLE JSON:
+5. LINGUA:
+   - Mantieni la STESSA LINGUA degli appunti originali (se gli appunti sono in inglese, le slide devono essere in inglese; se sono in italiano, in italiano).
+
+6. FORMATO DI OUTPUT E REGOLE JSON:
    - Restituisci ESCLUSIVAMENTE un array JSON valido di oggetti slide (senza markdown di contorno o testo prima/dopo).
    - Per tutti gli elenchi puntati (anche in "agenda" e "summary") usa SEMPRE la chiave "bullets": ["...", "..."].
    - Nelle formule LaTeX all'interno delle stringhe JSON usa SEMPRE il doppio backslash per i comandi matematici (es. "\\\\dot{q}", "\\\\tau", "\\\\frac{a}{b}") per garantire la piena conformità allo standard JSON.
