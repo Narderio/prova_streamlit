@@ -246,7 +246,7 @@ COLLEZIONE IMMAGINI DA POSIZIONARE ({len(prepared_images)} immagini allegate):""
     # Log della singola richiesta nel tracker di sicurezza (1 chiamata = 1 slot RPM)
     gemini_rate_tracker.log_request()
 
-    response = client.models.generate_content(
+    response = gemini_rate_tracker.execute_with_retry(client.models.generate_content, 
         model=model_name,
         contents=contents,
         config=types.GenerateContentConfig(

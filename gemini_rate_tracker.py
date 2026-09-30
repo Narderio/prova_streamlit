@@ -151,3 +151,26 @@ def wait_and_log_request():
 def log_request():
     """Alias di wait_and_log_request() per compatibilit√† con il codice esistente."""
     return wait_and_log_request()
+
+def execute_with_retry(func, *args, **kwargs):
+    """
+    Esegue una chiamata API a Gemini riprovando in caso di errore 503 (Service Unavailable) 
+    o 429 (Too Many Requests).
+    Massimo 3 tentativi con attesa incrementale (2s, 4s).
+    """
+    max_retries = 3
+    base_wait = 2.0
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            err_str = str(e)
+            if "503" in err_str or "429" in err_str or "Service Unavailable" in err_str:
+                if attempt == max_retries:
+                    raise e
+                wait_time = base_wait * (2 ** (attempt - 1))
+                time.sleep(wait_time)
+            else:
+                # Se l'errore non Ë 503 o 429, interrompi e lancialo subito
+                raise e

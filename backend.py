@@ -272,7 +272,7 @@ def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None,
     
     try:
         gemini_rate_tracker.log_request()
-        response = client.models.generate_content(
+        response = gemini_rate_tracker.execute_with_retry(client.models.generate_content, 
             model=model_name,
             contents=f"{prompt}\n\nTRASCRIZIONE:\n{text}"
         )
@@ -293,7 +293,7 @@ def generate_latex(markdown_text, model_name="gemini-3.5-flash-lite", api_key=No
     
     try:
         gemini_rate_tracker.log_request()
-        response = client.models.generate_content(
+        response = gemini_rate_tracker.execute_with_retry(client.models.generate_content, 
             model=model_name,
             contents=f"{LATEX_PROMPT}\n\nCONTENUTO MARKDOWN:\n{markdown_text}"
         )
@@ -468,7 +468,7 @@ ISTRUZIONE DELL'UTENTE:
 
     try:
         gemini_rate_tracker.log_request()
-        response = client.models.generate_content(
+        response = gemini_rate_tracker.execute_with_retry(client.models.generate_content, 
             model=model_name,
             contents=f"{CANVAS_AGENT_PROMPT}\n\n{user_payload}"
         )
@@ -517,7 +517,7 @@ ISTRUZIONE DELL'UTENTE:
 {user_instruction}"""
 
     gemini_rate_tracker.log_request()
-    response_stream = client.models.generate_content_stream(
+    response_stream = gemini_rate_tracker.execute_with_retry(client.models.generate_content_stream, 
         model=model_name,
         contents=f"{CANVAS_AGENT_PROMPT}\n\n{user_payload}"
     )
@@ -891,7 +891,7 @@ ISTRUZIONE DELL'UTENTE PER QUESTA SEZIONE:
 {user_instruction}"""
 
     gemini_rate_tracker.log_request()
-    response_stream = client.models.generate_content_stream(
+    response_stream = gemini_rate_tracker.execute_with_retry(client.models.generate_content_stream, 
         model=model_name,
         contents=f"{CANVAS_TARGETED_EDIT_PROMPT}\n\n{user_payload}"
     )

@@ -169,7 +169,7 @@ Genera ora la presentazione a slide completa in formato JSON secondo le regole d
 
     gemini_rate_tracker.log_request()
     
-    response = client.models.generate_content(
+    response = gemini_rate_tracker.execute_with_retry(client.models.generate_content, 
         model=model_name,
         contents=f"{PRESENTATION_SYSTEM_PROMPT}\n\n{user_prompt}",
         config=types.GenerateContentConfig(
