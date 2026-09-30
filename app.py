@@ -4326,7 +4326,8 @@ else:
     st.divider()
 
     is_latex_only_existing = already_processed and not force_reprocess and do_latex
-    can_start = url and (do_transcript or do_markdown_notion or do_latex) and (not already_processed or force_reprocess or is_latex_only_existing)
+    has_text = bool(st.session_state.testo_estratto)
+    can_start = (url or has_text) and (do_transcript or do_markdown_notion or do_latex) and (not already_processed or force_reprocess or is_latex_only_existing)
 
     if st.button("🚀 Avvia Elaborazione", type="primary", disabled=not can_start or is_notion_saving_active()):
         if already_processed and not force_reprocess and not do_latex:
@@ -4338,16 +4339,18 @@ else:
         elif do_markdown_notion and not selected_course_page_id:
             st.error("⚠️ Specifica l'ID della pagina Notion 'Corsi' nel file .env (NOTION_CORSI_PAGE_ID).")
         else:
+            is_manual_notion = not url and bool(st.session_state.testo_estratto)
             if force_reprocess or not already_processed:
-                st.session_state.testo_estratto = None
+                if not is_manual_notion:
+                    st.session_state.testo_estratto = None
+                    st.session_state.notion_page_url = None
+                    st.session_state._last_saved_notion_notes = None
                 st.session_state.appunti_generati = None
                 st.session_state.notes_versions = []
                 st.session_state.current_version_index = 0
                 st.session_state.latex_generato = None
                 st.session_state.notion_status = None
-                st.session_state.notion_page_url = None
                 st.session_state.canvas_chat_history = []
-                st.session_state._last_saved_notion_notes = None
 
             with st.status("🚀 Avvio elaborazione...", expanded=True) as status:
                 if already_processed and not force_reprocess and do_latex:
@@ -4388,7 +4391,7 @@ else:
                     else:
                         st.error("Impossibile recuperare gli appunti da Notion per generare il codice LaTeX.")
                 else:
-                    if do_transcript:
+                    if do_transcript and url:
                         status.update(label="📝 Estrazione trascrizione in corso...")
                         success_tr, text_tr, _ = download_and_process(url)
                         if success_tr:
@@ -4474,12 +4477,13 @@ else:
                                     lesson_date=formatted_date_str,
                                     notion_page_id=notion_page_id
                                 )
-                                try:
-                                    cached_is_video_processed.clear()
-                                    cached_get_all_lesson_videos.clear()
-                                    cached_get_notion_page_markdown.clear()
-                                except Exception:
-                                    pass
+                                
+                            try:
+                                cached_is_video_processed.clear()
+                                cached_get_all_lesson_videos.clear()
+                                cached_get_notion_page_markdown.clear()
+                            except Exception:
+                                pass
 
                             # Se gli appunti sono stati aggiunti o accodati, aggiorna il Canvas con la versione completa di Notion
                             # e recupera le trascrizioni aggregate di tutti i video associati alla lezione del giorno
