@@ -184,10 +184,21 @@ def sanitize_latex_formulas(text: str) -> str:
     """
     if not text:
         return ""
-    cleaned = re.sub(r'\\begin\{equation\*?\}', '', text)
+    cleaned = text
+    # 1. Rimuovi backticks errati attorno a formule LaTeX ($...$ o $$...$$): `$x$` -> $x$
+    cleaned = re.sub(r'`(\${1,2}[^`\n]+?\${1,2})`', r'\1', cleaned)
+    # 2. Rimuovi backticks errati attorno a comandi LaTeX privi di $ (es. `\hat{Y}` -> $\hat{Y}$)
+    cleaned = re.sub(r'`(\\[a-zA-Z]+(?:\{[^`\n]*\})*(?:_[^`\n\s]+|\^[^\`\n\s]+)?)`', r'$\1$', cleaned)
+    # 3. Trim spazi interni a formule inline $...$ (es. $ x $ -> $x$)
+    cleaned = re.sub(r'(?<!\\)\$([^\$\n]+?)(?<!\\)\$', lambda m: f"${m.group(1).strip()}$", cleaned)
+    # 4. Rimuovi spazio staccato tra formula e punteggiatura (es. $x$ . -> $x$.)
+    cleaned = re.sub(r'(\$[^\$\n]+?\$)\s+([.,;:!?])', r'\1\2', cleaned)
+    # 5. Normalizza tag equation
+    cleaned = re.sub(r'\\begin\{equation\*?\}', '', cleaned)
     cleaned = re.sub(r'\\end\{equation\*?\}', '', cleaned)
     cleaned = re.sub(r'([^\n])\$\$', r'\1\n$$', cleaned)
     cleaned = re.sub(r'\$\$([^\n])', r'$$\n\1', cleaned)
+    # 6. Sanifica blocchi Mermaid
     cleaned = sanitize_mermaid_diagrams(cleaned)
     return cleaned
 
@@ -1420,7 +1431,7 @@ def markdown_to_notion_blocks(markdown_text: str):
     """
     if not markdown_text:
         return []
-    markdown_text = normalize_images_to_markdown(markdown_text)
+    markdown_text = sanitize_latex_formulas(normalize_images_to_markdown(markdown_text))
     blocks = []
     lines = markdown_text.splitlines()
     N = len(lines)
@@ -1581,6 +1592,13 @@ def markdown_to_notion_blocks(markdown_text: str):
                 "object": "block",
                 "type": "heading_3",
                 "heading_3": {"rich_text": parse_inline_markdown(cleaned_title)}
+            })
+        # 5.5 Sottosezioni numerate prive di cancelletto (es. 1.1 Training Phase (Optimization))
+        elif re.match(r'^\d+\.\d+(?:\.\d+)?\s+[A-Za-z]', stripped) and len(stripped) < 90 and not stripped.endswith("."):
+            blocks.append({
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {"rich_text": parse_inline_markdown(stripped)}
             })
         # 6. Callout con emoji (📌, 📝, 💡, ⚠️, 🎓, ℹ️)
         elif stripped.startswith("> ") and any(e in stripped for e in ["📌", "📝", "💡", "⚠️", "🎓", "ℹ️"]):

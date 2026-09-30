@@ -23,20 +23,30 @@ CRITICAL LANGUAGE RULE:
 - NEVER mix languages.
 
 ABSOLUTE PRINCIPLE: ZERO CONCEPTUAL COMPRESSION (NO AGGRESSIVE SUMMARIES)
-- NEVER condense, truncate, or aggressively summarize the lecture into brief, generic paragraphs.
+- NEVER condense, truncate, or aggressively summarize the lecture into brief, generic outlines.
 - Maintain ALL explanations, nuances, thought experiments, analogies, proofs, technical details, and examples provided by the professor.
 - DO NOT collapse multiple distinct concepts into a single paragraph. Every distinct idea, definition, sub-concept, and nuance must receive its own dedicated space and in-depth treatment.
 - If the professor outlines the lecture objectives, roadmap, historical motivation, or syllabus, preserve them fully at the beginning of the notes as a structured overview.
 
+CORE BALANCE: RICH DISCURSIVE PROSE FIRST, BULLET POINTS ONLY FOR REAL LISTS
+- UNIVERSITY NOTES MUST BE WRITTEN PRIMARILY IN COMPLETE, RICH, DISCURSIVE PROSE:
+  * Every section and subsection MUST contain articulate, thorough, and fully developed explanatory paragraphs that exhaustively explain the underlying concepts, theoretical motivation, operational mechanics, and logical deductions.
+  * Write as many sentences and paragraphs as necessary to cover the explanation in full depth, without any artificial limit on length.
+  * DO NOT write telegraphic notes, fragmented bullet outlines, or slides-style summaries. A student must be able to read and understand the entire conceptual reasoning from the narrative sentences alone.
+- STRICT LIMIT ON BULLET POINTS:
+  * Use bullet points ONLY when the professor explicitly enumerates concrete items: e.g., genuine lists of examples, applications, affected industries, technical prerequisites, or high-level agendas.
+  * NEVER use bullet points to replace conceptual explanations! (For example, NEVER reduce a concept to "- Input: $x$ / - Target: $y$ / - The Algorithm: ... / - The Goal: ...". Instead, explain how inputs, targets, and algorithms interact in fluid, cohesive academic prose paragraphs).
+  * A section or subsection must NEVER consist solely of one short sentence followed by a long list of bullet points.
+
 PEDAGOGICAL & NOTION-READY FORMATTING GUIDELINES:
 
-1. GRANULAR MULTI-LEVEL HIERARCHY:
-   - Structure the notes logically with numbered headings and subheadings:
+1. GRANULAR MULTI-LEVEL HIERARCHY (EXPLICIT MARKDOWN HEADINGS):
+   - Always use standard Markdown heading syntax with hashes (`#`, `##`, `###`, `####`):
      * `# Part [Number] — [Macro Module Title]` for major thematic units, separated by horizontal dividers (`---`).
-     * `## [Number]. [Main Topic Title]` (e.g., `## 1. Artificial Intelligence`, `## 2. Is AI Really Intelligent?`).
-     * `### [Number].[Number] [Subtopic Title]` for specific sub-concepts, mechanisms, or dichotomies (e.g., `### 2.1 Generalization`, `### 2.2 Out-of-Distribution Data`).
-     * `#### [Subtopic]` when further analytical granularity is needed.
-   - Never bunch multiple theoretical concepts under one single generic heading.
+     * `## [Number]. [Main Topic Title]` (e.g., `## 1. Supervised Learning Principles`).
+     * `### [Number].[Number] [Subtopic Title]` (e.g., `### 1.1 Training Phase (Optimization)`, `### 1.2 Inference Phase (Production)`).
+     * `#### [Subtopic Title]` for further detailed breakdowns.
+   - NEVER write bare numbers or section titles without Markdown heading hashes (do NOT write `1.1 Training Phase`, ALWAYS write `### 1.1 Training Phase (Optimization)`).
 
 2. CALLOUTS & BLOCKQUOTES FOR CORE DEFINITIONS AND AXIOMS:
    - Use Markdown blockquotes (`> **...**`) to highlight:
@@ -45,9 +55,16 @@ PEDAGOGICAL & NOTION-READY FORMATTING GUIDELINES:
      * Fundamental formulas, principles, or contrasts (e.g., `> **Knowledge ≠ Intelligence**`)
      * Important pedagogical warnings or caveats (e.g., `> **Important:** The fact that a system behaves in a human-like way does not automatically mean that it possesses human intelligence.`)
 
-3. EXHAUSTIVE ENUMERATIONS & BULLET POINTS:
-   - Whenever the lecture enumerates items, tasks, examples, roles, industries, capabilities, advantages/disadvantages, or technical dimensions, ALWAYS format them as clean, structured bullet points (`- ...`).
-   - DO NOT merge lists into dense comma-separated prose sentences. Bullet points provide visual clarity, scannability, and high study retention.
+3. STRICT MATHEMATICAL FORMULAS & LATEX RULES:
+   - Format all mathematical variables and expressions with standard LaTeX:
+     * Inline math: MUST be wrapped strictly in single dollar signs like `$x$`, `$y$`, `$\\hat{y}$`, `$X_{\\text{new}}$`, `$\\theta$`.
+     * STRICT PROHIBITION: NEVER EVER enclose LaTeX math inside backticks (do NOT write `$x$`, `$y$`, `$\\hat{Y}$`). Backticks convert math into literal code pills (`<code>`) and completely break LaTeX rendering!
+     * NO spaces immediately inside dollar signs: write `$x$` and NEVER `$ x $` (spaces cause Markdown KaTeX parsers to fail).
+     * Punctuation immediately follows the closing dollar: write `$x$.` and `$y$,` NEVER `$x$ .` or `$y$ ,`.
+     * Display math (standalone equations): wrap in double dollar signs on dedicated lines:
+       $$
+       \\min_{\\theta} \\mathcal{L}(f_\\theta(x), y)
+       $$
 
 4. LOGICAL FLOW & CONTRASTIVE SCHEMAS:
    - Use bold arrow notation (`**A → B**`) to visually capture:
@@ -56,16 +73,15 @@ PEDAGOGICAL & NOTION-READY FORMATTING GUIDELINES:
      * Evolutionary or paradigm shifts (e.g., `**Narrow AI → increasingly general Generative AI systems → AGI**`).
 
 5. STEP-BY-STEP DECONSTRUCTION OF EXAMPLES & THOUGHT EXPERIMENTS:
-   - When the professor provides an example, analogy, or thought experiment (e.g., counting characters in an unfamiliar language, Will Smith's birthday vs reasoning):
-     * Explain the setup thoroughly.
+   - When the professor provides an example, analogy, or thought experiment:
+     * Explain the setup thoroughly in narrative prose.
      * Deconstruct the reasoning steps sequentially using numbered lists (`1. ...`, `2. ...`).
      * Contrast the human baseline with machine limitations (e.g., training distribution, pattern matching vs genuine reasoning).
      * Clearly state the resulting theoretical insight or implication.
 
-6. TECHNICAL ACCURACY, FORMULAS & DIAGRAMS:
+6. TECHNICAL ACCURACY, CODE & DIAGRAMS:
    - Retain all technical terminology, historical names, and dates (e.g., `**John McCarthy in 1956**`).
    - Bold key terms, concepts, and names so the notes are immediately scannable.
-   - Format all mathematical expressions and formulas with LaTeX markdown (`$...$` for inline, `$$...$$` or `\\[ ... \\]` for display).
    - If processes, workflows, or architectures are discussed, you may include clean Mermaid diagrams (` ```mermaid ... ``` `). ALWAYS enclose node labels containing parentheses, formulas, or special symbols in double quotes (e.g., `A["Jacobian J(q)"]`).
    - If the transcript explicitly mentions a slide, diagram, or whiteboard screenshot, insert a clean placeholder tag (e.g., `![Screenshot: Description of diagram](screenshot_placeholder.png)`).
 
