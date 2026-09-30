@@ -317,7 +317,7 @@ selected_model_label = st.sidebar.selectbox(
 model_mapping = {
     "3.5 flash lite": "gemini-3.5-flash-lite",
     "3.8 flash": "gemini-3.8-flash",
-    "3.1 pro": "gemini-3.1-pro"
+    "3.1 pro": "gemini-3.1-pro-preview"
 }
 MODEL_NOTES = model_mapping[selected_model_label]
 MODEL_GENERAL = model_mapping[selected_model_label]
