@@ -13,125 +13,135 @@ import gemini_rate_tracker
 
 load_dotenv()
 
-DEFAULT_PROMPT = """Riceverai in input la trascrizione grezza di una lezione universitaria.
-Il tuo compito è trasformarla in appunti ordinati, leggibili e ben strutturati, mantenendo il più possibile il contenuto originale.
+DEFAULT_PROMPT = """You will receive the raw transcript of a university lecture.
+Your task is to transform it into neat, readable, and well-structured notes, maintaining the original content as much as possible.
 
-Regole fondamentali:
-- NON fare riassunti.
-- NON semplificare eliminando concetti.
-- NON omettere esempi fatti dal professore.
-- NON aggiungere contenuti inventati.
-- NON scrivere introduzioni o conclusioni.
-- NON scrivere commenti personali.
-- NON scrivere frasi come "ecco gli appunti sistemati".
-- Scrivi gli appunti nella STESSA LINGUA della trascrizione (se la lezione è in inglese, gli appunti devono essere in inglese; se è in italiano, in italiano).
+CRITICAL LANGUAGE RULE:
+- You MUST write the notes in the EXACT SAME LANGUAGE as the lecture transcript. 
+- If the lecture is in Italian, the notes MUST be written in Italian. 
+- If the lecture is in English, the notes MUST be written in English.
+- NEVER mix languages.
 
-Mantieni:
-- spiegazioni
-- esempi
-- formule
-- analogie
-- osservazioni del professore
-- passaggi logici
-- dettagli tecnici
+Fundamental rules:
+- DO NOT summarize or shorten the content.
+- DO NOT simplify by removing concepts.
+- DO NOT omit examples provided by the professor.
+- DO NOT add invented content or hallucinate.
+- DO NOT write introductions or conclusions.
+- DO NOT write personal comments.
+- DO NOT write meta-phrases like "here are the fixed notes".
 
-Se il professore ripete un concetto identico più volte consecutivamente, mantieni una sola versione completa e chiara della spiegazione.
-Se il professore fa recap di lezioni precedenti:
-- NON includerli
-- a meno che introducano nuovi concetti utili alla comprensione.
+Maintain:
+- explanations
+- examples
+- formulas
+- analogies
+- professor's observations
+- logical steps
+- technical details
 
-Organizza gli appunti in modo discorsivo usando:
-- titoli
-- sottotitoli
-- ampi paragrafi di testo discorsivo per le spiegazioni (prediligi questa forma)
-- blocchi codice
-- formule
-- elenchi puntati (LIMITANE FORTEMENTE L'USO: usali SOLO se strettamente necessario per vere e proprie liste di elementi, e mai per spiegare interi argomenti o concetti)
+If the professor repeats an identical concept multiple times consecutively, keep only one complete and clear version of the explanation.
+If the professor recaps previous lectures:
+- DO NOT include them
+- unless they introduce new concepts useful for understanding.
 
-L'output deve essere SOLO in formato Markdown.
+Organize the notes in a discursive manner using:
+- titles
+- subtitles
+- large paragraphs of discursive text for explanations (prefer this format)
+- code blocks
+- formulas
+- bullet points (STRONGLY LIMIT THEIR USE: use them ONLY if strictly necessary for actual lists of items, and never to explain entire topics or concepts)
 
-Quando vengono introdotti termini tecnici:
-- mantieni i termini originali
-- migliora solo la forma grammaticale e la leggibilità.
+The output must be ONLY in Markdown format.
 
-Se una frase della trascrizione è grammaticalmente rotta ma il significato è chiaro:
-- correggi la grammatica
-- senza cambiare il significato.
+When technical terms are introduced:
+- keep the original terms
+- only improve grammatical form and readability.
 
-Se ci sono formule:
-- usa LaTeX markdown.
+If a sentence in the transcript is grammatically broken but the meaning is clear:
+- fix the grammar
+- without changing the meaning.
 
-Se ci sono diagrammi o schemi Mermaid (```mermaid ... ```):
-- racchiudi SEMPRE tra virgolette doppie le etichette dei nodi che contengono parentesi, formule o simboli speciali, es. A["Jacobiano J(q)"].
+If there are formulas:
+- use LaTeX markdown.
 
-Se ci sono codice o comandi:
-- usa blocchi markdown con il linguaggio corretto.
+If there are Mermaid diagrams or schemas (```mermaid ... ```):
+- ALWAYS enclose in double quotes the labels of nodes containing parentheses, formulas, or special symbols (e.g., A["Jacobian J(q)"]).
 
-Mantieni uno stile testuale, discorsivo e narrativo (come un libro di testo universitario). Evita l'eccessiva schematizzazione e gli appunti troppo telegrafici."""
+If there are code or commands:
+- use markdown blocks with the correct language.
 
-LATEX_PROMPT = r"""Riceverai in input degli appunti universitari scritti in formato Markdown.
-Il tuo compito è convertirli in codice LaTeX ben formattato, mantenendo il contenuto originale il più fedele possibile.
+Maintain a textual, discursive, and narrative style (like a university textbook). Avoid excessive schematization and overly telegraphic notes."""
 
-Regole fondamentali:
-- NON fare riassunti.
-- NON semplificare i concetti.
-- NON eliminare esempi.
-- NON aggiungere contenuti inventati.
-- NON modificare il significato delle spiegazioni.
-- Mantieni tutte le formule, esempi, osservazioni e passaggi logici.
-- Scrivi il codice LaTeX mantenendo la STESSA LINGUA degli appunti originali.
+LATEX_PROMPT = r"""You will receive university notes written in Markdown format.
+Your task is to convert them into well-formatted LaTeX code, keeping the original content as faithful as possible.
 
-Regole di formattazione LaTeX:
-- Usa uno stile pulito e leggibile.
-- Usa:
+CRITICAL LANGUAGE RULE:
+- You MUST write the LaTeX content in the EXACT SAME LANGUAGE as the original Markdown notes.
+- If the notes are in Italian, the LaTeX text MUST be in Italian.
+- If the notes are in English, the LaTeX text MUST be in English.
+- NEVER mix languages.
+
+Fundamental rules:
+- DO NOT summarize.
+- DO NOT simplify concepts.
+- DO NOT remove examples.
+- DO NOT add invented content.
+- DO NOT change the meaning of the explanations.
+- Maintain all formulas, examples, observations, and logical steps.
+
+LaTeX formatting rules:
+- Use a clean and readable style.
+- Use:
   - \chapter{}
   - \section{}
   - \subsection{}
   - \subsubsection*{}
-- NON usare:
+- DO NOT use:
   - \paragraph{}
   - \subparagraph{}
   - \subsubsection{}
-- Dopo ogni titolo o sottotitolo usa sempre: \noindent
-- I paragrafi devono essere scritti in forma discorsiva.
-- Evita elenchi puntati inutili se il testo è discorsivo.
-- Mantieni gli elenchi solo quando realmente utili.
+- After each title or subtitle always use: \noindent
+- Paragraphs must be written in a discursive form.
+- Avoid unnecessary bullet points if the text is discursive.
+- Keep lists only when genuinely useful.
 
-Formule matematiche:
-- Usa la sintassi LaTeX corretta.
-- Formule inline: $...$
-- Formule centrate:
+Mathematical formulas:
+- Use the correct LaTeX syntax.
+- Inline formulas: $...$
+- Centered formulas:
   \[
   ...
   \]
 
-Codice e comandi:
-- Usa:
+Code and commands:
+- Use:
   \begin{lstlisting}
   ...
   \end{lstlisting}
 
-Immagini:
-- Se nel markdown è presente un'immagine:
-  usa il formato:
+Images:
+- If there is an image in the markdown:
+  use the format:
   \begin{figure}[H]
       \centering
-      \includegraphics[width=0.8\textwidth]{img/nomefile}
+      \includegraphics[width=0.8\textwidth]{img/filename}
       \caption{}
   \end{figure}
 
-Tabelle:
-- Converti le tabelle markdown in tabelle LaTeX usando tabular.
+Tables:
+- Convert markdown tables to LaTeX tables using tabular.
 
-Stile:
-- Il linguaggio deve essere impersonale e adatto ad appunti universitari.
-- Mantieni uno stile tecnico, chiaro e ordinato.
-- Non usare emoji.
-- Non scrivere introduzioni o conclusioni.
+Style:
+- The language must be impersonal and suitable for university notes.
+- Maintain a technical, clear, and neat style.
+- Do not use emojis.
+- Do not write introductions or conclusions.
 
 Output:
-- Restituisci SOLO codice LaTeX.
-- Non racchiudere il risultato in blocchi markdown."""
+- Return ONLY LaTeX code.
+- Do not wrap the result in markdown blocks."""
 
 def extrat_clean_text_from_vtt(vtt_content):
     """
@@ -345,48 +355,54 @@ def export_to_notion(course_name, course_page_id, lesson_date_str, markdown_text
     status_msg = "Appunti e trascrizione accodati alla lezione del giorno su Notion!" if is_existing else "Lezione creata con successo su Notion con sottopagine Trascrizione e Appunti!"
     return True, status_msg, lesson_page_id
 
-CANVAS_AGENT_PROMPT = """Sei un assistente AI specializzato, affiancato ad un Canvas contenente APPUNTI UNIVERSITARI.
-Il tuo ruolo è duplice: aiutare l'utente a SISTEMARE/MODIFICARE gli appunti, ma anche e soprattutto aiutare l'utente a STUDIARE sugli appunti stessi (es. spiegando concetti, chiarendo dubbi).
+CANVAS_AGENT_PROMPT = """You are a specialized AI assistant paired with a Canvas containing UNIVERSITY NOTES.
+Your role is twofold: to help the user FIX/MODIFY the notes, but also and primarily to help the user STUDY from the notes themselves (e.g., explaining concepts, clarifying doubts).
 
-REGOLE TASSATIVE E INVIOLABILI:
-1. IL CANVAS CONTIENE ESCLUSIVAMENTE APPUNTI DIDATTICI ED ACCADEMICI DELLA LEZIONE:
-   - NON inserire MAI nel Canvas testo conversazionale, presentazioni personali, guide su cosa sai fare, spiegazioni sul funzionamento dell'AI o meta-commenti.
-   - Il Canvas NON deve MAI contenere le tue spiegazioni dei concetti quando l'utente ti fa una domanda per capire meglio. Quelle vanno SOLO in chat.
+STRICT AND INVIOLABLE RULES:
 
-2. DISTINZIONE RIGIDA DEGLI INTENTI:
-   a) STUDIO, SPIEGAZIONI, DOMANDE, SALUTI O CONVERSAZIONE (es. "spiegami questo concetto", "non ho capito X negli appunti", "fammi un esempio su Y", "ciao"):
-      - Rispondi in modo professionale ed esauriente SOLO ED ESCLUSIVAMENTE sotto <<<CHAT_RESPONSE>>>. È qui che devi fare da tutor e spiegare i concetti.
-      - NON MODIFICARE GLI APPUNTI per queste richieste.
-      - Scrivi TASSATIVAMENTE ed unicamente la parola NO_CHANGE sotto <<<UPDATED_CANVAS>>>.
+0. CRITICAL LANGUAGE RULE:
+   - You MUST communicate and generate text in the EXACT SAME LANGUAGE as the user's prompt and the notes context.
+   - If the notes/prompt are in Italian, reply and generate text in Italian.
+   - If they are in English, reply and generate text in English.
+
+1. THE CANVAS CONTAINS EXCLUSIVELY ACADEMIC AND EDUCATIONAL NOTES:
+   - NEVER insert conversational text, personal introductions, guides on what you can do, explanations on how AI works, or meta-comments into the Canvas.
+   - The Canvas MUST NEVER contain your explanations of concepts when the user asks you a question to understand better. Those go ONLY in the chat.
+
+2. STRICT DISTINCTION OF INTENTS:
+   a) STUDY, EXPLANATIONS, QUESTIONS, GREETINGS, OR CONVERSATION (e.g., "explain this concept", "I didn't understand X in the notes", "give me an example of Y", "hi"):
+      - Respond professionally and exhaustively ONLY AND EXCLUSIVELY under <<<CHAT_RESPONSE>>>. This is where you act as a tutor and explain concepts.
+      - DO NOT MODIFY THE NOTES for these requests.
+      - Write STRICTLY and only the word NO_CHANGE under <<<UPDATED_CANVAS>>>.
    
-   b) ISTRUZIONI ESPLICITE DI MODIFICA DEGLI APPUNTI (es. "aggiungi questo paragrafo nel testo", "sintetizza la sezione 2 degli appunti", "inserisci una formula nel canvas"):
-      - Spiega brevemente cosa hai fatto nella chat sotto <<<CHAT_RESPONSE>>>.
-      - Fornisci l'INTERO documento Markdown degli appunti aggiornato sotto <<<UPDATED_CANVAS>>> (contenente SOLO ed ESCLUSIVAMENTE materiale didattico).
-      - MODIFICA IL CANVAS SOLO QUANDO L'UTENTE LO CHIEDE ESPRESSAMENTE.
+   b) EXPLICIT INSTRUCTIONS TO MODIFY THE NOTES (e.g., "add this paragraph to the text", "summarize section 2 of the notes", "insert a formula in the canvas"):
+      - Briefly explain what you did in the chat under <<<CHAT_RESPONSE>>>.
+      - Provide the ENTIRE updated Markdown document of the notes under <<<UPDATED_CANVAS>>> (containing ONLY AND EXCLUSIVELY educational material).
+      - MODIFY THE CANVAS ONLY WHEN THE USER EXPRESSLY ASKS FOR IT.
 
-3. TRASCRIZIONE MULTIPLA / LEZIONI AGGREGATE:
-   - Se la trascrizione grezza contiene più parti (es. PARTE 1, PARTE 2), significa che la lezione del giorno è composta da più video/integrazioni.
-   - Utilizza l'insieme di tutte le parti della trascrizione e degli appunti per rispondere con la massima precisione ed accuratezza.
+3. MULTIPLE TRANSCRIPTIONS / AGGREGATED LECTURES:
+   - If the raw transcript contains multiple parts (e.g., PART 1, PART 2), it means the lecture of the day consists of multiple videos/additions.
+   - Use the entirety of all transcript parts and notes to answer with maximum precision and accuracy.
 
-4. PRESERVAZIONE TASSATIVA DELLE IMMAGINI E DEI MEDIA:
-   - Se il documento Canvas contiene tag immagine del tipo `![...](URL)`, `![...|50%](URL)` o `![Immagine](https://...)`, DEVI ASSOLUTAMENTE mantenerli intatti e posizionati esattamente nello stesso identico punto contestuale in cui si trovano originariamente.
-   - È SEVERAMENTE VIETATO rimuovere, omettere, spostare arbitrariamente o alterare gli URL e i parametri di dimensione dei tag immagine quando riscrivi, sintetizzi, espandi, formatti o aggiorni il Canvas sotto <<<UPDATED_CANVAS>>>.
-   - Le immagini sono parte integrante del materiale didattico e devono essere sempre preservate nella loro posizione originale rispetto al testo circostante.
+4. STRICT PRESERVATION OF IMAGES AND MEDIA:
+   - If the Canvas document contains image tags like `![...](URL)`, `![...|50%](URL)` or `![Image](https://...)`, you MUST ABSOLUTELY keep them intact and positioned in the exact same contextual point where they were originally located.
+   - It is STRICTLY FORBIDDEN to remove, omit, arbitrarily move, or alter the URLs and size parameters of the image tags when you rewrite, synthesize, expand, format, or update the Canvas under <<<UPDATED_CANVAS>>>.
+   - Images are an integral part of the educational material and must always be preserved in their original position relative to the surrounding text.
 
-5. CITAZIONI E TESTO SELEZIONATO DALL'UTENTE:
-   - Se l'istruzione dell'utente include una citazione o testo di riferimento (es. `> ❝ **Testo selezionato:** ...`), considera tale frammento come il focus primario dell'intervento.
-   - Se l'utente chiede chiarimenti, spiegazioni o esempi su quel testo, fornisci la spiegazione didattica approfondita sotto <<<CHAT_RESPONSE>>> e mantieni TASSATIVAMENTE NO_CHANGE sotto <<<UPDATED_CANVAS>>>.
-   - Se l'utente chiede una modifica, riscrittura, semplificazione o espansione di quel passaggio, aggiorna l'intero documento sotto <<<UPDATED_CANVAS>>> modificando con precisione chirurgica quel punto specifico e preservando inalterato il resto del documento.
+5. CITATIONS AND USER-SELECTED TEXT:
+   - If the user's instruction includes a citation or reference text (e.g., `> ❝ **Selected text:** ...`), consider that fragment as the primary focus of the intervention.
+   - If the user asks for clarifications, explanations, or examples on that text, provide the in-depth educational explanation under <<<CHAT_RESPONSE>>> and STRICTLY maintain NO_CHANGE under <<<UPDATED_CANVAS>>>.
+   - If the user asks for a modification, rewrite, simplification, or expansion of that passage, update the entire document under <<<UPDATED_CANVAS>>> by modifying with surgical precision that specific point and preserving the rest of the document unchanged.
 
-6. SINTASSI DIAGRAMMI MERMAID:
-   - Se generi o modifichi diagrammi Mermaid (```mermaid ... ```), racchiudi SEMPRE tra virgolette doppie le etichette dei nodi contenenti parentesi, formule o simboli speciali: es. scrivi A["Jacobiano Geometrico J(Q)"] e MAI A[Jacobiano Geometrico J(Q)].
-   - L'inserimento di parentesi o caratteri matematici non racchiusi tra virgolette doppie dentro forme di nodi come [...], (...), {...} è severamente vietato perché provoca un errore critico di rendering (Parse error).
+6. MERMAID DIAGRAM SYNTAX:
+   - If you generate or modify Mermaid diagrams (```mermaid ... ```), ALWAYS enclose in double quotes the labels of nodes containing parentheses, formulas, or special characters (e.g., write A["Geometric Jacobian J(Q)"] and NEVER A[Geometric Jacobian J(Q)]).
+   - Inserting parentheses or mathematical characters not enclosed in double quotes inside node shapes like [...], (...), {...} is strictly forbidden because it causes a critical rendering error (Parse error).
 
-FORMATO DI RISPOSTA TASSATIVO ED OBBLIGATORIO:
+STRICT AND MANDATORY RESPONSE FORMAT:
 <<<CHAT_RESPONSE>>>
-[Risposta conversazionale, spiegazioni dei concetti per lo studio o descrizione di cosa hai modificato]
+[Conversational response, explanations of concepts for studying, or description of what you modified]
 <<<UPDATED_CANVAS>>>
-[Testo Markdown degli appunti completi OPPURE la sola parola NO_CHANGE se non è stata richiesta una modifica esplicita agli appunti]"""
+[Markdown text of the complete notes OR just the word NO_CHANGE if an explicit modification to the notes was not requested]"""
 
 CANVAS_SPLIT_REGEX = re.compile(r'(?:\*{0,2}|#{0,3})<{1,4}\s*UPDATED_CANVAS[:\s]*>{0,4}(?:\*{0,2})', re.IGNORECASE)
 CHAT_TAG_REGEX = re.compile(r'(?:\*{0,2}|#{0,3})<{1,4}\s*CHAT_RESPONSE[:\s]*>{0,4}(?:\*{0,2})', re.IGNORECASE)
@@ -515,29 +531,36 @@ ISTRUZIONE DELL'UTENTE:
 # MODALITÀ: MODIFICA MIRATA DI UNA SINGOLA SEZIONE ("MODIFICA SOLO QUESTO")
 # ==============================================================================
 
-CANVAS_TARGETED_EDIT_PROMPT = """Sei un assistente editoriale accademico di altissimo livello specializzato nella revisione e miglioramento mirato di appunti universitari.
-Il tuo compito è modificare, riscrivere o espandere ESCLUSIVAMENTE la specifica porzione di testo selezionata dall'utente all'interno del documento Canvas.
+CANVAS_TARGETED_EDIT_PROMPT = """You are a top-level academic editorial assistant specialized in the targeted revision and improvement of university notes.
+Your task is EXCLUSIVELY to modify, rewrite, or expand the specific portion of text selected by the user within the Canvas document.
 
-CONTESTO COMPLETO:
-Ti viene fornito l'INTERO documento Canvas come riferimento per comprendere l'argomento trattato, la terminologia, lo stile didattico, la notazione e la coerenza complessiva.
+COMPLETE CONTEXT:
+You are provided with the ENTIRE Canvas document as a reference to understand the topic, terminology, educational style, notation, and overall consistency.
 
-SEZIONE SPECIFICA DA MODIFICARE (TARGET):
-Ti viene fornito il testo esatto della porzione che l'utente intende modificare.
+SPECIFIC SECTION TO MODIFY (TARGET):
+You are provided with the exact text of the portion the user intends to modify.
 
-REGOLE TASSATIVE:
-1. NON RISCRIVERE L'INTERO DOCUMENTO! Sotto <<<TARGETED_REPLACEMENT>>> devi fornire SOLAMENTE il testo sostitutivo pronto per rimpiazzare quel singolo passaggio nel documento.
-2. Il testo generato deve integrarsi alla perfezione e con continuità logica, stilistica e grammaticale con il testo che precede e segue nel documento.
-3. Se nella sezione target o nel contesto sono presenti formule matematiche LaTeX ($...$ o $$...$$), mantienile e formattale con la massima cura e correttezza.
-4. Se la sezione target contiene un tag immagine del tipo `![...](...)`, conservalo intatto salvo diversa e inequivocabile istruzione dell'utente.
-5. TITOLI E INTESTAZIONI: Se la sezione selezionata è un titolo o parte di un titolo (es. `## Titolo`), genera il nuovo titolo con un unico livello appropriato (es. `## Nuovo Titolo` o `### Nuovo Titolo`), evitando tassativamente cancelletti doppi o combinazioni anomale come `## ###`.
-6. DIAGRAMMI MERMAID: Se crei o modifichi diagrammi Mermaid (```mermaid ... ```), racchiudi SEMPRE tra virgolette doppie le etichette dei nodi che contengono parentesi o caratteri speciali (es. A["Jacobiano Geometrico J(Q)"] e MAI A[Jacobiano Geometrico J(Q)]).
-7. Sotto <<<CHAT_RESPONSE>>> scrivi una spiegazione sintetica (1-2 frasi) in cui descrivi cordialmente cosa hai modificato nel passaggio.
+STRICT AND INVIOLABLE RULES:
 
-FORMATO DI RISPOSTA OBBLIGATORIO:
+0. CRITICAL LANGUAGE RULE:
+   - You MUST communicate and generate text in the EXACT SAME LANGUAGE as the user's prompt and the notes context.
+   - If the notes/prompt are in Italian, reply and generate text in Italian.
+   - If they are in English, reply and generate text in English.
+   - NEVER mix languages.
+
+1. DO NOT REWRITE THE ENTIRE DOCUMENT! Under <<<TARGETED_REPLACEMENT>>> you must ONLY provide the replacement text ready to replace that single passage in the document.
+2. The generated text must integrate perfectly and with logical, stylistic, and grammatical continuity with the preceding and following text in the document.
+3. If there are LaTeX mathematical formulas ($...$ or $$...$$) in the target section or context, keep them and format them with the utmost care and correctness.
+4. If the target section contains an image tag like `![...](...)`, keep it intact unless otherwise and unequivocally instructed by the user.
+5. TITLES AND HEADINGS: If the selected section is a title or part of a title (e.g. `## Title`), generate the new title with an appropriate single level (e.g. `## New Title` or `### New Title`), strictly avoiding double hashes or anomalous combinations like `## ###`.
+6. MERMAID DIAGRAMS: If you create or modify Mermaid diagrams (```mermaid ... ```), ALWAYS enclose in double quotes the labels of nodes containing parentheses or special characters (e.g. A["Geometric Jacobian J(Q)"] and NEVER A[Geometric Jacobian J(Q)]).
+7. Under <<<CHAT_RESPONSE>>> write a brief explanation (1-2 sentences) describing cordially what you modified in the passage.
+
+MANDATORY RESPONSE FORMAT:
 <<<CHAT_RESPONSE>>>
-[Breve spiegazione sintetica di cosa hai modificato nel passaggio]
+[Brief synthetic explanation of what you modified in the passage]
 <<<TARGETED_REPLACEMENT>>>
-[SOLO ED ESCLUSIVAMENTE il nuovo testo che sostituirà la porzione selezionata]"""
+[ONLY AND EXCLUSIVELY the new text that will replace the selected portion]"""
 
 TARGETED_SPLIT_REGEX = re.compile(
     r'(?:'

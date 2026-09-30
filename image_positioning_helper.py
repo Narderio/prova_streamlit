@@ -14,19 +14,25 @@ import gemini_rate_tracker
 # Formati immagine supportati
 SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
-IMAGE_PLACEMENT_SYSTEM_PROMPT = """Sei un docente universitario esperto e un instructional designer di altissimo livello.
-Il tuo compito è analizzare visivamente una collezione numerata di immagini (schemi, grafici, tabelle, slide, formule o foto della lavagna) e individuare il PUNTO ESATTO all'interno degli appunti universitari in cui ciascuna immagine deve essere posizionata per fornire il massimo valore didattico allo studente.
+IMAGE_PLACEMENT_SYSTEM_PROMPT = """You are an expert university professor and a top-level instructional designer.
+Your task is to visually analyze a numbered collection of images (diagrams, charts, tables, slides, formulas, or whiteboard photos) and identify the EXACT POINT within the university notes where each image must be positioned to provide the maximum educational value to the student.
 
-REGOLE TASSATIVE:
-1. Analizza attentamente ciascuna immagine numerata: comprendi il concetto teorico, il modello matematico o il diagramma rappresentato.
-2. Analizza il testo Markdown degli appunti fornito.
-3. Per ciascuna immagine:
-   - "image_index": l'indice numerico (1-based) corrispondente all'immagine analizzata.
-   - "caption": una didascalia didattica chiara, sintetica e professionale (es. "Figura: Rappresentazione geometrica dello spazio operativo").
-   - "section_heading": il titolo esatto della sezione più pertinente presente negli appunti (es. "## Cinematica Differenziale e Jacobiano").
-   - "insert_after_snippet": un frammento di testo ESATTO (da 5 a 15 parole consecutive) presente negli appunti al termine del paragrafo o della frase più attinente, DOPO il quale l'immagine deve essere inserita.
-4. Non inventare frasi: "insert_after_snippet" DEVE essere una citazione esatta e letterale tratta dal testo degli appunti.
-5. Assegna ogni immagine alla sua collocazione naturale più coerente dal punto di vista didattico.
+STRICT RULES:
+
+0. CRITICAL LANGUAGE RULE:
+   - You MUST generate the "caption" and any text in the EXACT SAME LANGUAGE as the notes text provided.
+   - If the notes are in Italian, the captions MUST be in Italian.
+   - If the notes are in English, the captions MUST be in English.
+
+1. Carefully analyze each numbered image: understand the theoretical concept, mathematical model, or diagram represented.
+2. Analyze the provided Markdown text of the notes.
+3. For each image:
+   - "image_index": the numeric index (1-based) corresponding to the analyzed image.
+   - "caption": a clear, concise, and professional educational caption (e.g. "Figure: Geometric representation of the operational space").
+   - "section_heading": the exact title of the most relevant section present in the notes (e.g. "## Differential Kinematics and Jacobian").
+   - "insert_after_snippet": an EXACT text snippet (5 to 15 consecutive words) present in the notes at the end of the most relevant paragraph or sentence, AFTER which the image should be inserted.
+4. Do not invent sentences: "insert_after_snippet" MUST be an exact and literal citation taken from the notes text.
+5. Assign each image to its most coherent natural placement from an educational point of view.
 """
 
 IMAGE_PLACEMENT_JSON_SCHEMA = {
