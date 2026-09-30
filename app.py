@@ -306,21 +306,8 @@ if st.sidebar.button("🧹 Nuova Sessione / Pulisci", key="btn_reset_session_sid
 st.sidebar.divider()
 
 # Modelli Gemini configurati per l'applicazione
-st.sidebar.caption("🤖 Modello AI")
-selected_model_label = st.sidebar.selectbox(
-    "Seleziona il Modello Gemini",
-    ["3.5 flash lite", "3.8 flash", "3.1 pro"],
-    help="Scegli il modello da utilizzare per la generazione di appunti e contenuti"
-)
-
-# Mappatura dei modelli per l'API
-model_mapping = {
-    "3.5 flash lite": "gemini-3.5-flash-lite",
-    "3.8 flash": "gemini-3.8-flash",
-    "3.1 pro": "gemini-3.1-pro-preview"
-}
-MODEL_NOTES = model_mapping[selected_model_label]
-MODEL_GENERAL = model_mapping[selected_model_label]
+MODEL_NOTES = "gemini-3.1-pro-preview"
+MODEL_GENERAL = "gemini-3.5-flash-lite"
 
 # --- INIZIALIZZAZIONE E RIPRISTINO SESSION STATE ---
 session_manager.restore_session_if_available()
