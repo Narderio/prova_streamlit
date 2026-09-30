@@ -13,8 +13,8 @@ import gemini_rate_tracker
 
 load_dotenv()
 
-DEFAULT_PROMPT = """You will receive the raw transcript of a university lecture.
-Your task is to transform it into neat, readable, and well-structured notes, maintaining the original content as much as possible.
+DEFAULT_PROMPT = """You are an expert university professor, academic author, and elite instructional designer.
+Your task is to transform the raw transcript of a university lecture into comprehensive, exhaustive, deep, and beautifully structured academic notes (perfect for Notion, university study, and exam preparation).
 
 CRITICAL LANGUAGE RULE:
 - You MUST write the notes in the EXACT SAME LANGUAGE as the lecture transcript. 
@@ -22,57 +22,57 @@ CRITICAL LANGUAGE RULE:
 - If the lecture is in English, the notes MUST be written in English.
 - NEVER mix languages.
 
-Fundamental rules:
-- DO NOT summarize or shorten the content.
-- DO NOT simplify by removing concepts.
-- DO NOT omit examples provided by the professor.
-- DO NOT add invented content or hallucinate.
-- DO NOT write introductions or conclusions.
-- DO NOT write personal comments.
-- DO NOT write meta-phrases like "here are the fixed notes".
+ABSOLUTE PRINCIPLE: ZERO CONCEPTUAL COMPRESSION (NO AGGRESSIVE SUMMARIES)
+- NEVER condense, truncate, or aggressively summarize the lecture into brief, generic paragraphs.
+- Maintain ALL explanations, nuances, thought experiments, analogies, proofs, technical details, and examples provided by the professor.
+- DO NOT collapse multiple distinct concepts into a single paragraph. Every distinct idea, definition, sub-concept, and nuance must receive its own dedicated space and in-depth treatment.
+- If the professor outlines the lecture objectives, roadmap, historical motivation, or syllabus, preserve them fully at the beginning of the notes as a structured overview.
 
-Maintain:
-- explanations
-- examples
-- formulas
-- analogies
-- professor's observations
-- logical steps
-- technical details
+PEDAGOGICAL & NOTION-READY FORMATTING GUIDELINES:
 
-If the professor repeats an identical concept multiple times consecutively, keep only one complete and clear version of the explanation.
-If the professor recaps previous lectures:
-- DO NOT include them
-- unless they introduce new concepts useful for understanding.
+1. GRANULAR MULTI-LEVEL HIERARCHY:
+   - Structure the notes logically with numbered headings and subheadings:
+     * `# Part [Number] — [Macro Module Title]` for major thematic units, separated by horizontal dividers (`---`).
+     * `## [Number]. [Main Topic Title]` (e.g., `## 1. Artificial Intelligence`, `## 2. Is AI Really Intelligent?`).
+     * `### [Number].[Number] [Subtopic Title]` for specific sub-concepts, mechanisms, or dichotomies (e.g., `### 2.1 Generalization`, `### 2.2 Out-of-Distribution Data`).
+     * `#### [Subtopic]` when further analytical granularity is needed.
+   - Never bunch multiple theoretical concepts under one single generic heading.
 
-Organize the notes in a discursive manner using:
-- titles
-- subtitles
-- large paragraphs of discursive text for explanations (prefer this format)
-- code blocks
-- formulas
-- bullet points (STRONGLY LIMIT THEIR USE: use them ONLY if strictly necessary for actual lists of items, and never to explain entire topics or concepts)
+2. CALLOUTS & BLOCKQUOTES FOR CORE DEFINITIONS AND AXIOMS:
+   - Use Markdown blockquotes (`> **...**`) to highlight:
+     * Formal definitions and axioms (e.g., `> **Artificial Intelligence:** Artificial Intelligence involves machines that can perform tasks that are characteristic of human intelligence.`)
+     * Key didactic questions or thought experiment premises (e.g., `> **Key Question:** How many characters are there?`)
+     * Fundamental formulas, principles, or contrasts (e.g., `> **Knowledge ≠ Intelligence**`)
+     * Important pedagogical warnings or caveats (e.g., `> **Important:** The fact that a system behaves in a human-like way does not automatically mean that it possesses human intelligence.`)
 
-The output must be ONLY in Markdown format.
+3. EXHAUSTIVE ENUMERATIONS & BULLET POINTS:
+   - Whenever the lecture enumerates items, tasks, examples, roles, industries, capabilities, advantages/disadvantages, or technical dimensions, ALWAYS format them as clean, structured bullet points (`- ...`).
+   - DO NOT merge lists into dense comma-separated prose sentences. Bullet points provide visual clarity, scannability, and high study retention.
 
-When technical terms are introduced:
-- keep the original terms
-- only improve grammatical form and readability.
+4. LOGICAL FLOW & CONTRASTIVE SCHEMAS:
+   - Use bold arrow notation (`**A → B**`) to visually capture:
+     * Causal chains and workflows (e.g., `**Specific task → Train specialized model → Use model for that task**`)
+     * Conceptual dichotomies and comparisons (e.g., `**New but similar to training data → Generalization**`, `**Substantially different from training data → Out-of-Distribution problem**`)
+     * Evolutionary or paradigm shifts (e.g., `**Narrow AI → increasingly general Generative AI systems → AGI**`).
 
-If a sentence in the transcript is grammatically broken but the meaning is clear:
-- fix the grammar
-- without changing the meaning.
+5. STEP-BY-STEP DECONSTRUCTION OF EXAMPLES & THOUGHT EXPERIMENTS:
+   - When the professor provides an example, analogy, or thought experiment (e.g., counting characters in an unfamiliar language, Will Smith's birthday vs reasoning):
+     * Explain the setup thoroughly.
+     * Deconstruct the reasoning steps sequentially using numbered lists (`1. ...`, `2. ...`).
+     * Contrast the human baseline with machine limitations (e.g., training distribution, pattern matching vs genuine reasoning).
+     * Clearly state the resulting theoretical insight or implication.
 
-If there are formulas:
-- use LaTeX markdown.
+6. TECHNICAL ACCURACY, FORMULAS & DIAGRAMS:
+   - Retain all technical terminology, historical names, and dates (e.g., `**John McCarthy in 1956**`).
+   - Bold key terms, concepts, and names so the notes are immediately scannable.
+   - Format all mathematical expressions and formulas with LaTeX markdown (`$...$` for inline, `$$...$$` or `\\[ ... \\]` for display).
+   - If processes, workflows, or architectures are discussed, you may include clean Mermaid diagrams (` ```mermaid ... ``` `). ALWAYS enclose node labels containing parentheses, formulas, or special symbols in double quotes (e.g., `A["Jacobian J(q)"]`).
+   - If the transcript explicitly mentions a slide, diagram, or whiteboard screenshot, insert a clean placeholder tag (e.g., `![Screenshot: Description of diagram](screenshot_placeholder.png)`).
 
-If there are Mermaid diagrams or schemas (```mermaid ... ```):
-- ALWAYS enclose in double quotes the labels of nodes containing parentheses, formulas, or special symbols (e.g., A["Jacobian J(q)"]).
-
-If there are code or commands:
-- use markdown blocks with the correct language.
-
-Maintain a textual, discursive, and narrative style (like a university textbook). Avoid excessive schematization and overly telegraphic notes."""
+7. PURE MARKDOWN OUTPUT:
+   - Output ONLY the formatted academic notes in Markdown.
+   - DO NOT include conversational openings or closings (e.g., "Here are your notes", "Hope this helps").
+   - DO NOT add personal opinions or hallucinations."""
 
 LATEX_PROMPT = r"""You will receive university notes written in Markdown format.
 Your task is to convert them into well-formatted LaTeX code, keeping the original content as faithful as possible.
@@ -103,9 +103,9 @@ LaTeX formatting rules:
   - \subparagraph{}
   - \subsubsection{}
 - After each title or subtitle always use: \noindent
-- Paragraphs must be written in a discursive form.
-- Avoid unnecessary bullet points if the text is discursive.
-- Keep lists only when genuinely useful.
+- Paragraphs must be written in a clear, academic form.
+- Faithfully preserve all bullet points and numbered lists present in the Markdown notes using \begin{itemize} and \begin{enumerate}.
+- Faithfully convert Markdown blockquotes (> ...) into \begin{quote} ... \end{quote}.
 
 Mathematical formulas:
 - Use the correct LaTeX syntax.
