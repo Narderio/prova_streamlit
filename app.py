@@ -3813,7 +3813,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                     st.error(f"❌ Errore durante la risposta dell'Assistente: {str(e)}")
                     st.session_state.canvas_chat_history.append({"role": "assistant", "content": f"⚠️ Si è verificato un errore durante l'elaborazione: {str(e)}"})
                     session_manager.auto_save_session()
-                    st.rerun()
+                    # st.rerun() rimosso per evitare schermata bianca
 
         # Campo chat_input nativo (nascosto visivamente da JS e usato come bridge per inviare i messaggi)
         user_input = st.chat_input("Chiedi all'Assistente AI di modificare il Canvas...")
