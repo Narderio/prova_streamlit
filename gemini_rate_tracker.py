@@ -1,4 +1,5 @@
 import json
+import requests
 import os
 import time
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ RPM_WINDOW_SECONDS = 60
 RPD_WINDOW_HOURS = 24
 
 class GeminiRateLimitError(Exception):
-    """Sollevata quando viene raggiunto il limite giornaliero RPD o quando una richiesta non può essere elaborata."""
+    """Sollevata quando viene raggiunto il limite giornaliero RPD o quando una richiesta non puÃ² essere elaborata."""
     pass
 
 def _load_requests():
@@ -52,7 +53,7 @@ def _init_memory_if_needed():
         _IN_MEMORY_TIMESTAMPS.sort()
 
 def _clean_and_get_timestamps(now=None):
-    """Carica e pulisce le richieste più vecchie di 24 ore in memoria, ritornando lista di datetime ordinata."""
+    """Carica e pulisce le richieste piÃ¹ vecchie di 24 ore in memoria, ritornando lista di datetime ordinata."""
     if now is None:
         now = datetime.now()
     _init_memory_if_needed()
@@ -109,7 +110,7 @@ def wait_and_log_request():
     """
     Controlla e applica i vincoli di frequenza:
     1. Se RPD >= 495: blocca e lancia GeminiRateLimitError fino al reset del giorno.
-    2. Se RPM >= 13: attende automaticamente il tempo necessario affinché scada la richiesta più vecchia nel minuto,
+    2. Se RPM >= 13: attende automaticamente il tempo necessario affinchÃ© scada la richiesta piÃ¹ vecchia nel minuto,
        quindi registra il timestamp e procede.
     """
     while True:
@@ -131,7 +132,7 @@ def wait_and_log_request():
                 minutes = int((wait_sec_rpd % 3600) // 60)
                 time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes} min"
                 raise GeminiRateLimitError(
-                    f"⛔ Limite giornaliero di sicurezza raggiunto ({rpd_count}/500 RPD). "
+                    f"â Limite giornaliero di sicurezza raggiunto ({rpd_count}/500 RPD). "
                     f"Richieste bloccate per proteggere la quota giornaliera fino al reset (stimato: ~{time_str})."
                 )
                 
@@ -149,16 +150,69 @@ def wait_and_log_request():
         time.sleep(min(wait_sec_rpm, 65.0))
 
 def log_request():
-    """Alias di wait_and_log_request() per compatibilità con il codice esistente."""
+    """Alias di wait_and_log_request() per compatibilitÃ  con il codice esistente."""
     return wait_and_log_request()
+
+class FakeGoogleResponse:
+    def __init__(self, text):
+        self.text = text
+
+def _trigger_openrouter_fallback(is_stream, *args, **kwargs):
+    print("Google Gemini fallito 2 volte, uso fallback OpenRouter...")
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+        "HTTP-Referer": "https://localhost",
+        "X-Title": "Appunti App"
+    }
+    
+    # Estrarre il prompt 
+    prompt_content = kwargs.get('contents', '')
+    if not prompt_content and len(args) > 1:
+        prompt_content = args[1]
+        
+    if not isinstance(prompt_content, str):
+        try:
+            prompt_content = str(prompt_content)
+        except Exception:
+            prompt_content = ""
+
+    data = {
+        "model": "qwen/qwen3.8-27b:free",
+        "messages": [{"role": "user", "content": prompt_content}],
+        "stream": is_stream
+    }
+
+    response = requests.post(url, headers=headers, json=data, stream=is_stream)
+    response.raise_for_status()
+
+    if not is_stream:
+        content_text = response.json()['choices'][0]['message']['content']
+        return FakeGoogleResponse(content_text)
+    else:
+        def stream_generator():
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode('utf-8')
+                    if line_str.startswith("data: "):
+                        if line_str == "data: [DONE]":
+                            break
+                        try:
+                            chunk_data = json.loads(line_str[6:])
+                            text = chunk_data['choices'][0].get('delta', {}).get('content', '')
+                            if text:
+                                yield FakeGoogleResponse(text)
+                        except Exception:
+                            pass
+        return stream_generator()
 
 def execute_with_retry(func, *args, **kwargs):
     """
     Esegue una chiamata API a Gemini riprovando in caso di errore 503 (Service Unavailable) 
     o 429 (Too Many Requests).
-    Massimo 3 tentativi con attesa incrementale (2s, 4s).
+    Massimo 2 tentativi, poi Fallback su OpenRouter.
     """
-    max_retries = 3
+    max_retries = 2
     base_wait = 2.0
     
     for attempt in range(1, max_retries + 1):
@@ -168,9 +222,13 @@ def execute_with_retry(func, *args, **kwargs):
             err_str = str(e)
             if "503" in err_str or "429" in err_str or "Service Unavailable" in err_str:
                 if attempt == max_retries:
-                    raise e
+                    is_stream = getattr(func, '__name__', '') == 'generate_content_stream'
+                    try:
+                        return _trigger_openrouter_fallback(is_stream, *args, **kwargs)
+                    except Exception as fallback_err:
+                        print(f"Fallback OpenRouter fallito: {fallback_err}")
+                        raise e 
                 wait_time = base_wait * (2 ** (attempt - 1))
                 time.sleep(wait_time)
             else:
-                # Se l'errore non � 503 o 429, interrompi e lancialo subito
                 raise e
