@@ -9,8 +9,8 @@ TRACKER_FILE = "gemini_requests.json"
 lock = Lock()
 
 # Soglie di sicurezza richieste
-MAX_RPM_LIMIT = 13   # Limite di sicurezza su 15 RPM
-MAX_RPD_LIMIT = 495  # Limite di sicurezza su 500 RPD
+MAX_RPM_LIMIT = 999999  # Disattivato (Piano Pagato)   # Limite di sicurezza su 15 RPM
+MAX_RPD_LIMIT = 9999999  # Disattivato (Piano Pagato)  # Limite di sicurezza su 500 RPD
 RPM_WINDOW_SECONDS = 60
 RPD_WINDOW_HOURS = 24
 

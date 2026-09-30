@@ -287,13 +287,10 @@ else:
 rpm, rpd = gemini_rate_tracker.get_metrics()
 st.sidebar.caption("Monitoraggio Richieste")
 col1, col2 = st.sidebar.columns(2)
-col1.metric("RPM", f"{rpm} / 15", help="Richieste nell'ultimo minuto (attesa automatica al raggiungimento di 13)")
-col2.metric("RPD", f"{rpd} / 500", help="Richieste nelle ultime 24 ore (blocco di sicurezza al raggiungimento di 495)")
+col1.metric("RPM", f"{rpm}", help="Richieste elaborate nell\'ultimo minuto")
+col2.metric("RPD", f"{rpd}", help="Richieste elaborate nelle ultime 24 ore")
 
-if rpd >= 495:
-    st.sidebar.error("⛔ Limite di sicurezza (495/500 RPD) raggiunto! Richieste bloccate fino al reset del giorno.")
-elif rpm >= 13:
-    st.sidebar.warning("⏳ Soglia di 13/15 RPM raggiunta. Nuove richieste in attesa automatica del reset del minuto.")
+
 
 st.sidebar.divider()
 
