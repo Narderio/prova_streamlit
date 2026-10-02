@@ -385,7 +385,6 @@ def is_notion_saving_active():
             st.session_state.notion_save_thread = None
             st.session_state.notion_status = "✅ Pagina aggiornata su Notion con successo!"
             st.toast("✅ Appunti salvati su Notion con successo!", icon="🎉")
-            st.rerun()
             return False
     return False
 
@@ -527,7 +526,6 @@ def save_current_notes_to_notion():
         st.session_state.canvas_view_radio = "👁️ Anteprima Formattata"
         st.session_state.standard_view_radio = "👁️ Anteprima Formattata"
         st.toast("📤 Salvataggio degli appunti su Notion avviato!", icon="🚀")
-        st.rerun()
     else:
         st.error("Impossibile individuare la pagina Notion da aggiornare.")
         st.toast("❌ Errore: Impossibile individuare la pagina Notion da aggiornare.", icon="⚠️")
@@ -549,6 +547,24 @@ def render_notion_save_button_tab():
         btn_type = "primary" if check_has_unsaved_changes() else "secondary"
         if st.button("📤 Salva su Notion", type=btn_type, use_container_width=True, key="btn_save_edited_notion"):
             save_current_notes_to_notion()
+
+@st.fragment(run_every="2s")
+def render_canvas_notion_save_icon():
+    is_saving = is_notion_saving_active()
+    has_unsaved_canvas = check_has_unsaved_changes()
+    help_notion = "⏳ Salvataggio in corso..." if is_saving else ("⚠️ Salva su Notion (Modifiche non salvate)" if has_unsaved_canvas else "Salva su Notion")
+    if st.button("📤", help=help_notion, key="btn_save_notion_icon", disabled=is_saving):
+        if st.session_state.get("canvas_edit_mode_toggle", False):
+            bridge_val = st.session_state.get("notes_sync_bridge_input")
+            if bridge_val and str(bridge_val).strip():
+                clean_bridge = notion_helper.normalize_images_to_markdown(bridge_val)
+                st.session_state.appunti_generati = clean_bridge
+                st.session_state._last_valid_appunti = clean_bridge
+                cur_idx = st.session_state.get("current_version_index", 0)
+                versions = st.session_state.get("notes_versions", [])
+                if 0 <= cur_idx < len(versions):
+                    versions[cur_idx] = clean_bridge
+        save_current_notes_to_notion()
 
 def render_image_placement_popover(key_suffix="main", button_label="🖼️ Immagini", button_help="Inserisci immagini negli appunti"):
     """
@@ -1291,7 +1307,10 @@ def inject_scroll_sync_mode_js():
                         const snip = getVisibleSnippet(el);
                         if (snip) pWin.__readingSnippet = snip;
                         const max = el.scrollHeight - el.clientHeight;
-                        if (max > 0) pWin.__readingRatio = el.scrollTop / max;
+                        if (max > 0) {
+                            pWin.__readingRatio = el.scrollTop / max;
+                            pWin.__readingScrollTop = el.scrollTop;
+                        }
                     }
                 }
             }, true);
@@ -1503,9 +1522,11 @@ def inject_scroll_sync_mode_js():
                     }
                 }
 
-                // 3. Fallback: percentuale di scroll
+                // 3. Fallback: pixel esatti o percentuale di scroll
                 if (targetScroll >= 0) {
                     c.scrollTop = Math.max(0, targetScroll);
+                } else if (pWin.__readingScrollTop !== undefined && pWin.__readingScrollTop > 0) {
+                    c.scrollTop = pWin.__readingScrollTop;
                 } else if (ratio > 0) {
                     const max = c.scrollHeight - c.clientHeight;
                     if (max > 0) c.scrollTop = ratio * max;
@@ -1624,7 +1645,9 @@ def inject_scroll_sync_mode_js():
                 }
             } else {
                 // ANTEPRIMA MODE (No editor found)
-                if (pWin.__currentActiveMode !== 'anteprima') {
+                const c = getCanvasPreviewContainer();
+                const needsRestore = (pWin.__currentActiveMode !== 'anteprima') || (c && c.scrollTop === 0 && ((pWin.__readingScrollTop && pWin.__readingScrollTop > 20) || (pWin.__readingRatio && pWin.__readingRatio > 0.05)));
+                if (needsRestore) {
                     pWin.__currentActiveMode = 'anteprima';
                     pWin.__lastSyncedBridgeVal = undefined;
                     restorePreview();
@@ -2438,9 +2461,7 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
         with b2:
             trigger_latex_regen = st.button("📄", help="Rigenera LaTeX in background", key="btn_regen_latex_canvas", disabled=is_latex_active)
         with b3:
-            has_unsaved_canvas = check_has_unsaved_changes()
-            help_notion = "⚠️ Salva su Notion (Modifiche non salvate)" if has_unsaved_canvas else "Salva su Notion"
-            trigger_notion_save = st.button("📤", help=help_notion, key="btn_save_notion_icon", disabled=is_saving_active)
+            render_canvas_notion_save_icon()
         with b4:
             trigger_back = st.button("🔙", help="Torna al Form", key="btn_close_canvas_icon")
 
@@ -2486,19 +2507,6 @@ if st.session_state.get("show_canvas_chat", False) and st.session_state.get("app
                         versions[cur_idx] = clean_bridge
             st.session_state.show_canvas_chat = False
             st.rerun()
-
-        if trigger_notion_save:
-            if st.session_state.canvas_edit_mode_toggle:
-                bridge_val = st.session_state.get("notes_sync_bridge_input")
-                if bridge_val and str(bridge_val).strip():
-                    clean_bridge = notion_helper.normalize_images_to_markdown(bridge_val)
-                    st.session_state.appunti_generati = clean_bridge
-                    st.session_state._last_valid_appunti = clean_bridge
-                    cur_idx = st.session_state.get("current_version_index", 0)
-                    versions = st.session_state.get("notes_versions", [])
-                    if 0 <= cur_idx < len(versions):
-                        versions[cur_idx] = clean_bridge
-            save_current_notes_to_notion()
 
         if trigger_latex_regen:
             trigger_background_latex_regen()

@@ -1555,6 +1555,17 @@ def markdown_to_notion_blocks(markdown_text: str):
                 }
             })
             idx += 1
+            # Se la riga successiva ripete la didascalia dell'immagine (es. *caption* o testo normale),
+            # saltala per evitare di creare un blocco paragrafo duplicato sotto la didascalia nativa di Notion
+            lookahead_idx = idx
+            while lookahead_idx < N and not lines[lookahead_idx].strip():
+                lookahead_idx += 1
+            if lookahead_idx < N and alt_text and alt_text != "Immagine":
+                next_line = lines[lookahead_idx].strip()
+                clean_alt = alt_text.strip().lower()
+                clean_next = re.sub(r'^[\*_]+|[\*_]+$', '', next_line).strip().lower()
+                if clean_alt and clean_next == clean_alt:
+                    idx = lookahead_idx + 1
             continue
 
         # 4. Separatore ---
