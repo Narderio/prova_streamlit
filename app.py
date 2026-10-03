@@ -589,7 +589,6 @@ def render_image_placement_popover(key_suffix="main", button_label="🖼️ Imma
             key=current_uploader_key
         )
         if uploaded_imgs:
-            st.info(f"📁 {len(uploaded_imgs)} file selezionati")
             if st.button("✨ Posiziona Immagini", type="primary", use_container_width=True, key=f"btn_run_placement_{key_suffix}"):
                 if not st.session_state.get("appunti_generati"):
                     st.warning("⚠️ Nessun testo presente negli appunti su cui posizionare le immagini.")
