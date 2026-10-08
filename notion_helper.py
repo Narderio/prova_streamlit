@@ -939,7 +939,7 @@ def get_notion_page_markdown(page_id, api_key=None) -> str:
                 elif b_type == "quote":
                     lines.append(f"> {text_content}")
                 elif b_type == "callout":
-                    icon_emoji = block.get("callout", {}).get("icon", {}).get("emoji", "📌")
+                    icon_emoji = (block.get("callout", {}).get("icon") or {}).get("emoji", "📌")
                     lines.append(f"> {icon_emoji} {text_content}")
                 elif b_type == "code":
                     lang = block.get("code", {}).get("language", "")
