@@ -13,6 +13,13 @@ import gemini_rate_tracker
 
 load_dotenv()
 
+NO_SOURCE_REFERENCES_RULE = """NO REFERENCES TO THE PROFESSOR, THE SLIDES OR THE BOOK:
+- The notes must NEVER mention "the professor", "the lecturer", "the slides" or "the book" (in any language, e.g. "il professore", "le slide", "il libro").
+- State every concept directly, as a fact of the subject, not as something someone said or showed.
+  * WRONG: "The slides describe it as a cycle of three steps." / "The professor explains that..."
+  * RIGHT: "It is described by three steps." / "[The concept itself, stated directly]"
+- This applies to every sentence of the notes, including headings, definitions, examples and image captions."""
+
 DEFAULT_PROMPT = """You are an expert university professor, academic author, and elite instructional designer.
 Your task is to transform the raw transcript of a university lecture into comprehensive, exhaustive, deep, and beautifully structured academic notes (perfect for Notion, university study, and exam preparation).
 
@@ -88,7 +95,9 @@ PEDAGOGICAL & NOTION-READY FORMATTING GUIDELINES:
 7. PURE MARKDOWN OUTPUT:
    - Output ONLY the formatted academic notes in Markdown.
    - DO NOT include conversational openings or closings (e.g., "Here are your notes", "Hope this helps").
-   - DO NOT add personal opinions or hallucinations."""
+   - DO NOT add personal opinions or hallucinations.
+
+""" + NO_SOURCE_REFERENCES_RULE
 
 LATEX_PROMPT = r"""You will receive university notes written in Markdown format.
 Your task is to convert them into well-formatted LaTeX code, keeping the original content as faithful as possible.
@@ -285,6 +294,8 @@ def generate_notes(text, model_name="gemini-3.5-flash-lite", custom_prompt=None,
 
     client = genai.Client(api_key=api_key)
     prompt = custom_prompt if (custom_prompt and custom_prompt.strip()) else DEFAULT_PROMPT
+    if NO_SOURCE_REFERENCES_RULE not in prompt:
+        prompt = f"{prompt}\n\n{NO_SOURCE_REFERENCES_RULE}"
     
     try:
         gemini_rate_tracker.log_request()
@@ -395,6 +406,9 @@ STRICT AND INVIOLABLE RULES:
       - Briefly explain what you did in the chat under <<<CHAT_RESPONSE>>>.
       - Provide the ENTIRE updated Markdown document of the notes under <<<UPDATED_CANVAS>>> (containing ONLY AND EXCLUSIVELY educational material).
       - MODIFY THE CANVAS ONLY WHEN THE USER EXPRESSLY ASKS FOR IT.
+
+   - Any text written into the Canvas must follow this rule:
+""" + NO_SOURCE_REFERENCES_RULE + """
 
 3. MULTIPLE TRANSCRIPTIONS / AGGREGATED LECTURES:
    - If the raw transcript contains multiple parts (e.g., PART 1, PART 2), it means the lecture of the day consists of multiple videos/additions.
@@ -570,7 +584,8 @@ STRICT AND INVIOLABLE RULES:
 4. If the target section contains an image tag like `![...](...)`, keep it intact unless otherwise and unequivocally instructed by the user.
 5. TITLES AND HEADINGS: If the selected section is a title or part of a title (e.g. `## Title`), generate the new title with an appropriate single level (e.g. `## New Title` or `### New Title`), strictly avoiding double hashes or anomalous combinations like `## ###`.
 6. MERMAID DIAGRAMS: If you create or modify Mermaid diagrams (```mermaid ... ```), ALWAYS enclose in double quotes the labels of nodes containing parentheses or special characters (e.g. A["Geometric Jacobian J(Q)"] and NEVER A[Geometric Jacobian J(Q)]).
-7. Under <<<CHAT_RESPONSE>>> write a brief explanation (1-2 sentences) describing cordially what you modified in the passage.
+7. """ + NO_SOURCE_REFERENCES_RULE + """
+8. Under <<<CHAT_RESPONSE>>> write a brief explanation (1-2 sentences) describing cordially what you modified in the passage.
 
 MANDATORY RESPONSE FORMAT:
 <<<CHAT_RESPONSE>>>
