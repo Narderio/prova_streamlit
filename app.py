@@ -306,7 +306,7 @@ if st.sidebar.button("🧹 Nuova Sessione / Pulisci", key="btn_reset_session_sid
 st.sidebar.divider()
 
 # Modelli Gemini configurati per l'applicazione
-MODEL_NOTES = "gemini-3.1-pro-preview"
+MODEL_NOTES = "gemini-4-argon"
 MODEL_GENERAL = "gemini-3.5-flash-lite"
 
 # --- INIZIALIZZAZIONE E RIPRISTINO SESSION STATE ---
